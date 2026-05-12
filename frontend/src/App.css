@@ -48,11 +48,12 @@ body {
 
 /* ── Sidebar ────────────────────────────────────────────────────────── */
 .app-sidebar {
-  width: 240px;
-  min-width: 240px;
+  width: 272px;
+  min-width: 272px;
   padding: 20px 16px;
   background: #fff;
   border-right: 1px solid #e5e7eb;
+  overflow-y: auto;
 }
 
 /* ── Main content ───────────────────────────────────────────────────── */
@@ -302,7 +303,8 @@ body {
   inset: 0;
   background: #d1d5db;
   border-radius: 20px;
-  cursor: not-allowed;
+  cursor: pointer;
+  transition: background 0.2s;
 }
 
 .toggle-slider::before {
@@ -318,12 +320,83 @@ body {
 }
 
 .toggle input:checked + .toggle-slider {
-  background: #93c5fd;
+  background: #1d4ed8;
 }
 
-.settings-note {
-  margin-top: 24px;
-  font-size: 11px;
-  color: #9ca3af;
-  line-height: 1.6;
+/* ── Settings extras ────────────────────────────────────────────────── */
+.settings-divider {
+  border: none;
+  border-top: 1px solid #f3f4f6;
+  margin: 16px 0;
+}
+
+.checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.checkbox-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #374151;
+  cursor: pointer;
+}
+
+.checkbox-item input[type='checkbox'] {
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+  accent-color: #1d4ed8;
+}
+
+.range-slider {
+  width: 100%;
+  accent-color: #1d4ed8;
+  cursor: pointer;
+}
+
+.btn-outline {
+  width: 100%;
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #1d4ed8;
+  background: transparent;
+  border: 1px solid #1d4ed8;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-outline:hover:not(:disabled) {
+  background: #eff6ff;
+}
+
+.btn-outline:disabled {
+  color: #93c5fd;
+  border-color: #bfdbfe;
+  cursor: not-allowed;
+}
+
+.settings-feedback {
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings-feedback-ok {
+  background: #f0fdf4;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.settings-feedback-err {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
 }

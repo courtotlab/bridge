@@ -1,0 +1,4 @@
+# Placeholder — services will be defined when Docker setup begins.
+version: '3.8'
+
+services: {}

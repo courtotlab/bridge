@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv
+venv/
+env/
+ENV/
+
+# uv
+.python-version
+
+# Environment files
+.env
+.env.local
+.env.*.local
+.claude/settings.local.json
+
+# Node
+node_modules/
+dist/
+build/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Docker / local data
+data/
+postgres_data/
+.dockerignore
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+
+# Logs
+*.log
+.cache/
+

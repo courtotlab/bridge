@@ -1,4 +1,28 @@
-# Placeholder — services will be defined when Docker setup begins.
-version: '3.8'
+# Development only — not for production use.
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - backend_venv:/app/.venv
+    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
-services: {}
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    depends_on:
+      - backend
+
+volumes:
+  backend_venv:
+  frontend_node_modules:

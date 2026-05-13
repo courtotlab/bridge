@@ -1,15 +1,40 @@
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
-class ConfigTestRequest(BaseModel):
-    provider: str
-    model: str
-    base_url: str | None = None
-    use_retrieval_grounding: bool
-    selected_ontologies: list[str]
-    confidence_threshold: float = Field(ge=0.0, le=1.0)
+class AppConfig(BaseModel):
+    # Layer 1 — NER extraction
+    use_ner: bool = True
+
+    # Layer 2 — Candidate retrieval
+    retrieval_mode: Literal["public", "local", "disabled"] = "public"
+    bioportal_api_key: str | None = None      # in-memory only, not saved to disk
+    loinc_username: str | None = None
+    loinc_password: str | None = None         # in-memory only, not saved to disk
+    sapbert_server_url: str = "http://localhost:8000"
+    rag_auto_accept_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+
+    # Layer 3 — AI model
+    provider: Literal["ollama", "ollama_cloud", "openai", "anthropic"] = "ollama"
+    model: str = "llama3.2"
+    base_url: str = "http://localhost:11434"
+    api_key: str | None = None                # in-memory only, never saved to disk
 
 
-class ConfigTestResponse(BaseModel):
+class LayerStatus(BaseModel):
+    layer1: Literal["ok", "warning", "disabled", "error"]
+    layer2: Literal["ok", "warning", "disabled", "error"]
+    layer3: Literal["ok", "warning", "disabled", "error"]
+
+
+class ConfigStatusResponse(BaseModel):
+    config: AppConfig
+    status: LayerStatus
+
+
+class ConnectionTestResponse(BaseModel):
     success: bool
     message: str
+    latency_ms: int | None = None
+    available_models: list[str] | None = None

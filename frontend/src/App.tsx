@@ -1,22 +1,32 @@
+import { Navigate, Route, BrowserRouter as Router, Routes } from 'react-router-dom';
 import './App.css';
-import SettingsPanel from './components/SettingsPanel';
-import SingleTermMappingPage from './pages/SingleTermMappingPage';
+import Sidebar from './components/Sidebar';
+import BatchPage from './pages/BatchPage';
+import ExportPage from './pages/ExportPage';
+import HistoryPage from './pages/HistoryPage';
+import ReviewPage from './pages/ReviewPage';
+import SearchPage from './pages/SearchPage';
+import SettingsPage from './pages/SettingsPage';
+import ValidatorPage from './pages/ValidatorPage';
 
 export default function App() {
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1 className="app-title">Bridge</h1>
-        <span className="app-subtitle">Ontology Mapping Workspace</span>
-      </header>
-      <div className="app-body">
-        <aside className="app-sidebar">
-          <SettingsPanel />
-        </aside>
+    <Router>
+      <div className="app-shell">
+        <Sidebar />
         <main className="app-main">
-          <SingleTermMappingPage />
+          <Routes>
+            <Route path="/" element={<Navigate to="/settings" replace />} />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/search" element={<SearchPage />} />
+            <Route path="/batch" element={<BatchPage />} />
+            <Route path="/validator" element={<ValidatorPage />} />
+            <Route path="/review" element={<ReviewPage />} />
+            <Route path="/history" element={<HistoryPage />} />
+            <Route path="/export" element={<ExportPage />} />
+          </Routes>
         </main>
       </div>
-    </div>
+    </Router>
   );
 }

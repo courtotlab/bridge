@@ -9,7 +9,15 @@ dependencies = [
     "python-multipart",
     "pandas",
     "openpyxl",
+    "requests>=2.31",
+    "httpx>=0.27",
+    "openai>=1.30",
+    "anthropic>=0.25",
+    "llm-ontology-mapper",
 ]
+
+[tool.uv.sources]
+llm-ontology-mapper = { path = "../../llm-ontology-mapper", editable = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

@@ -52,6 +52,7 @@ def get_ollama_models() -> list[str]:
 @router.post("/test", response_model=ConnectionTestResponse)
 def test_connection() -> ConnectionTestResponse:
     config = load_config()
+    print(f"[config/test] hit — provider={config.provider!r} model={config.model!r}", flush=True)
     provider = config.provider
 
     if provider in ("ollama", "ollama_cloud"):

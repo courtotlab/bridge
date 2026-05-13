@@ -12,7 +12,10 @@ export async function saveConfig(config: AppConfig): Promise<AppConfig> {
 }
 
 export async function testConnection(): Promise<ConnectionTestResponse> {
+  const url = `${client.defaults.baseURL}/config/test`;
+  console.log('[configApi] testConnection → POST', url);
   const { data } = await client.post<ConnectionTestResponse>('/config/test');
+  console.log('[configApi] testConnection ← response', data);
   return data;
 }
 

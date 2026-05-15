@@ -18,6 +18,11 @@ _sensitive: dict[str, str | None] = {
 # Connection-test result — held in memory, reset when config is saved
 _connection_tested: bool = False
 _connection_test_passed: bool = False
+_connection_api_key_ok: bool | None = None
+_connection_model_ok: bool | None = None
+
+# Retrieval validation — held in memory, set by SapBERT check on connection test
+_retrieval_validation: str = "untested"  # "untested" | "ok" | "error"
 
 
 def get_connection_tested() -> bool:
@@ -28,16 +33,47 @@ def get_connection_test_passed() -> bool:
     return _connection_test_passed
 
 
-def set_connection_result(passed: bool) -> None:
-    global _connection_tested, _connection_test_passed
+def get_connection_api_key_ok() -> bool | None:
+    return _connection_api_key_ok
+
+
+def get_connection_model_ok() -> bool | None:
+    return _connection_model_ok
+
+
+def set_connection_result(
+    success: bool,
+    *,
+    api_key_ok: bool | None = None,
+    model_ok: bool | None = None,
+) -> None:
+    global _connection_tested, _connection_test_passed, _connection_api_key_ok, _connection_model_ok
     _connection_tested = True
-    _connection_test_passed = passed
+    _connection_test_passed = success
+    _connection_api_key_ok = api_key_ok
+    _connection_model_ok = model_ok
 
 
 def invalidate_connection_test() -> None:
-    global _connection_tested, _connection_test_passed
+    global _connection_tested, _connection_test_passed, _connection_api_key_ok, _connection_model_ok
     _connection_tested = False
     _connection_test_passed = False
+    _connection_api_key_ok = None
+    _connection_model_ok = None
+
+
+def get_retrieval_validation() -> str:
+    return _retrieval_validation
+
+
+def set_retrieval_result(passed: bool) -> None:
+    global _retrieval_validation
+    _retrieval_validation = "ok" if passed else "error"
+
+
+def invalidate_retrieval_validation() -> None:
+    global _retrieval_validation
+    _retrieval_validation = "untested"
 
 
 def load_config() -> AppConfig:

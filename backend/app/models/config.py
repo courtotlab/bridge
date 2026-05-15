@@ -38,9 +38,13 @@ class ConnectionTestResponse(BaseModel):
     message: str
     latency_ms: int | None = None
     available_models: list[str] | None = None
-    validation_level: str | None = None  # 'reachability' | 'generation'
+    validation_level: str | None = None  # 'api_key' | 'generation' | 'reachability'
     sapbert_status: str | None = None    # 'ok' | 'unreachable' | 'skipped'
     sapbert_message: str | None = None
+    provider_ok: bool | None = None
+    api_key_ok: bool | None = None
+    model_ok: bool | None = None
+    error_type: str | None = None  # invalid_api_key, subscription_required, model_unavailable, ...
 
 
 class ModelsListResponse(BaseModel):

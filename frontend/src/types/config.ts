@@ -32,14 +32,29 @@ export interface ConfigStatusResponse {
   status: LayerStatus;
 }
 
+export type ConnectionTestErrorType =
+  | 'invalid_api_key'
+  | 'subscription_required'
+  | 'model_unavailable'
+  | 'quota_exceeded'
+  | 'permission_denied'
+  | 'model_not_supported'
+  | 'model_test_failed'
+  | 'network_error'
+  | 'unknown';
+
 export interface ConnectionTestResponse {
   success: boolean;
   message: string;
   latency_ms?: number;
   available_models?: string[];
-  validation_level?: 'reachability' | 'generation';
+  validation_level?: 'api_key' | 'discovery' | 'reachability' | 'generation';
   sapbert_status?: 'ok' | 'unreachable' | 'skipped' | null;
   sapbert_message?: string | null;
+  provider_ok?: boolean | null;
+  api_key_ok?: boolean | null;
+  model_ok?: boolean | null;
+  error_type?: ConnectionTestErrorType | null;
 }
 
 export interface OpenAIModelsResponse {

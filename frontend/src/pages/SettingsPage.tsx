@@ -15,7 +15,15 @@ const DEFAULT_MODEL: Record<Provider, string> = {
 // Never sent to the backend — config.api_key always holds the real key.
 const MASKED_KEY_SENTINEL = '••••••••';
 
+const CLOUD_PROVIDERS: Provider[] = ['openai', 'ollama_cloud', 'anthropic'];
+
 type TestState = 'idle' | 'loading' | 'done';
+
+type TestSnapshot = {
+  provider: Provider;
+  api_key: string | null;
+  model: string;
+};
 
 export default function SettingsPage() {
   const [config, setConfig] = useState<AppConfig>({
@@ -59,44 +67,192 @@ export default function SettingsPage() {
   const [anthropicModelsWarning, setAnthropicModelsWarning] = useState<string | null>(null);
   const [anthropicModelsError, setAnthropicModelsError] = useState<string | null>(null);
 
+  // True when the API key field changed since the last successful connection test
+  const [apiKeyDirty, setApiKeyDirty] = useState(false);
+
+  // Avoid fetching Ollama models with default provider before GET /config returns
+  const [configLoaded, setConfigLoaded] = useState(false);
+  const [ollamaModelsError, setOllamaModelsError] = useState<string | null>(null);
+
+  const testRequestIdRef = useRef(0);
+  const configRef = useRef(config);
+
+  configRef.current = config;
+
   // Load config on mount
   useEffect(() => {
     getConfig()
       .then((c) => {
         setConfig(c);
+        setConfigLoaded(true);
         if (c.api_key && (c.provider === 'openai' || c.provider === 'anthropic')) {
           setApiKeyDisplay(MASKED_KEY_SENTINEL);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        setConfigLoaded(true);
+      });
   }, []);
 
   // Fetch Ollama Local models when base_url changes (debounced 500 ms)
   const fetchOllamaModels = useCallback(() => {
     if (ollamaDebounceRef.current) clearTimeout(ollamaDebounceRef.current);
     ollamaDebounceRef.current = setTimeout(() => {
-      if (config.provider === 'ollama') {
-        getOllamaModels().then(setOllamaModels).catch(() => setOllamaModels([]));
-      }
+      if (config.provider !== 'ollama') return;
+      setOllamaModelsError(null);
+      getOllamaModels()
+        .then((models) => {
+          setOllamaModels(models);
+          setOllamaModelsError(null);
+        })
+        .catch((err) => {
+          setOllamaModels([]);
+          const detail =
+            isAxiosError(err) && err.response?.data && typeof err.response.data === 'object'
+              && 'detail' in err.response.data
+              ? String((err.response.data as { detail: unknown }).detail)
+              : null;
+          setOllamaModelsError(
+            detail ?? 'Could not reach Ollama — is it running at the server URL below?',
+          );
+        });
     }, 500);
   }, [config.provider]);
 
   useEffect(() => {
-    if (config.provider === 'ollama') {
-      fetchOllamaModels();
+    if (!configLoaded || config.provider !== 'ollama') {
+      setOllamaModels([]);
+      setOllamaModelsError(null);
+      return;
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.base_url, config.provider]);
+    fetchOllamaModels();
+  }, [configLoaded, config.base_url, config.provider, fetchOllamaModels]);
+
+  function clearValidationResult() {
+    setTestResult(null);
+    setTestState('idle');
+  }
 
   function patch(updates: Partial<AppConfig>) {
-    setConfig((prev) => ({ ...prev, ...updates }));
+    setConfig((prev) => {
+      const next = { ...prev, ...updates };
+      configRef.current = next;
+      return next;
+    });
     setDirty(true);
     setSaveMsg('');
+  }
+
+  function patchModel(model: string) {
+    setTestResult(null);
+    setTestState('idle');
+    setConfig((prev) => {
+      const next = { ...prev, model };
+      configRef.current = next;
+      return next;
+    });
+    setDirty(true);
+    setSaveMsg('');
+  }
+
+  function buildTestConfig(): AppConfig {
+    const current = configRef.current;
+    return {
+      ...current,
+      model: (current.model ?? '').trim(),
+    };
+  }
+
+  function matchesTestSnapshot(snapshot: TestSnapshot): boolean {
+    const current = configRef.current;
+    return (
+      snapshot.provider === current.provider &&
+      snapshot.api_key === current.api_key &&
+      snapshot.model === current.model
+    );
+  }
+
+  function applyCloudModelsFromTest(
+    provider: Provider,
+    result: ConnectionTestResponse,
+  ) {
+    if (!result.available_models?.length) return;
+    if (provider === 'ollama_cloud') {
+      setCloudModels(result.available_models);
+    }
+    if (provider === 'openai') {
+      setOpenaiModels(result.available_models);
+      setOpenaiModelsWarning(null);
+      setOpenaiModelsError(null);
+    }
+    if (provider === 'anthropic') {
+      setAnthropicModels(result.available_models);
+      setAnthropicModelsWarning(null);
+      setAnthropicModelsError(null);
+    }
+  }
+
+  function testResultMessage(result: ConnectionTestResponse | null, succeeded: boolean): string {
+    const msg = result?.message;
+    if (typeof msg === 'string' && msg.trim()) return msg;
+    return succeeded
+      ? 'Connection test succeeded.'
+      : 'Connection test failed. Please try again.';
+  }
+
+  function isApiKeyValidated(result: ConnectionTestResponse): boolean {
+    return result.api_key_ok === true;
+  }
+
+  function isDiscoveryOnly(result: ConnectionTestResponse): boolean {
+    return (
+      result.validation_level === 'discovery' ||
+      (result.provider_ok === true && result.api_key_ok !== true && Boolean(result.available_models?.length))
+    );
+  }
+
+  /** Model catalog returned — unlock dropdown without treating the API key as authenticated. */
+  function hasModelCatalogFromTest(result: ConnectionTestResponse): boolean {
+    return Boolean(result.available_models?.length) && (isApiKeyValidated(result) || isDiscoveryOnly(result));
+  }
+
+  function isModelLevelTestFailure(result: ConnectionTestResponse): boolean {
+    return (
+      !result.success &&
+      result.api_key_ok === true &&
+      result.error_type !== 'invalid_api_key'
+    );
+  }
+
+  function clearProviderModels() {
+    setCloudModels([]);
+    setOpenaiModels([]);
+    setOpenaiModelsWarning(null);
+    setOpenaiModelsError(null);
+    setAnthropicModels([]);
+    setAnthropicModelsWarning(null);
+    setAnthropicModelsError(null);
+  }
+
+  function markApiKeyDirty() {
+    setApiKeyDirty(true);
+    clearProviderModels();
+    clearValidationResult();
+    if (CLOUD_PROVIDERS.includes(configRef.current.provider)) {
+      setConfig((prev) => {
+        const next = { ...prev, model: '' };
+        configRef.current = next;
+        return next;
+      });
+      setDirty(true);
+      setSaveMsg('');
+    }
   }
 
   function handleProviderChange(provider: Provider) {
     setTestResult(null);
     setTestState('idle');
+    setApiKeyDirty(false);
     setCloudModels([]);
     setOpenaiModels([]);
     setOpenaiModelsWarning(null);
@@ -112,16 +268,11 @@ export default function SettingsPage() {
     setSaving(true);
     setSaveMsg('');
     try {
-      await saveConfig(config);
+      const saved = await saveConfig(buildTestConfig());
+      configRef.current = saved;
+      setConfig(saved);
       setDirty(false);
       setSaveMsg('Settings saved');
-      // Invalidate model dropdowns so the user must re-test after saving
-      setOpenaiModels([]);
-      setOpenaiModelsWarning(null);
-      setOpenaiModelsError(null);
-      setAnthropicModels([]);
-      setAnthropicModelsWarning(null);
-      setAnthropicModelsError(null);
       window.dispatchEvent(new Event('bridge:status-refresh'));
     } catch {
       setSaveMsg('Failed to save settings.');
@@ -131,60 +282,71 @@ export default function SettingsPage() {
   }
 
   async function handleTest() {
+    const requestId = ++testRequestIdRef.current;
+    const payload = buildTestConfig();
+    const snapshot: TestSnapshot = {
+      provider: payload.provider,
+      api_key: payload.api_key,
+      model: payload.model,
+    };
+
     setTestState('loading');
     setTestResult(null);
-    console.log(
-      '[handleTest] provider=', config.provider,
-      '| model=', config.model || '(empty)',
-      '| api_key=', config.api_key ? 'set' : 'empty',
-    );
+    if (import.meta.env.DEV) {
+      console.debug('[handleTest] payload', {
+        provider: payload.provider,
+        model: payload.model || '(empty)',
+        hasApiKey: Boolean(payload.api_key),
+      });
+    }
     try {
-      // Always forward current in-page config so unsaved api_key/model is used
-      const result = await testConnection(config);
+      const result = await testConnection(payload);
+      if (requestId !== testRequestIdRef.current || !matchesTestSnapshot(snapshot)) {
+        console.log('[handleTest] stale response ignored');
+        return;
+      }
+
       setTestResult(result);
 
-      if (result.success) {
-        window.dispatchEvent(new Event('bridge:status-refresh'));
+      if (hasModelCatalogFromTest(result)) {
+        setApiKeyDirty(false);
       }
+      window.dispatchEvent(new Event('bridge:status-refresh'));
 
-      // Populate cloud model dropdown from /api/tags response
-      if (config.provider === 'ollama_cloud' && result.available_models?.length) {
-        console.log('[handleTest] cloudModels populated:', result.available_models);
-        setCloudModels(result.available_models);
-        // Auto-select first model only when none is chosen yet
-        if (!config.model) {
-          patch({ model: result.available_models[0] });
+      if (CLOUD_PROVIDERS.includes(payload.provider)) {
+        if (result.available_models?.length) {
+          applyCloudModelsFromTest(payload.provider, result);
         }
+        return;
       }
 
-      // Populate OpenAI / Anthropic model dropdowns after a successful test
-      if (result.success && config.provider === 'openai') {
+      // OpenAI / Anthropic fallback when not using unified cloud path (should not run)
+      if (config.provider === 'openai' && result.success) {
         const resp = await getOpenAIModels();
+        if (requestId !== testRequestIdRef.current) return;
         setOpenaiModels(resp.models);
         setOpenaiModelsWarning(resp.warning ?? null);
         setOpenaiModelsError(resp.error ?? null);
-        if (!resp.error && resp.models.length > 0 && !resp.models.includes(config.model)) {
-          patch({ model: resp.models[0] });
-        }
       }
-
-      if (result.success && config.provider === 'anthropic') {
+      if (config.provider === 'anthropic' && result.success) {
         const resp = await getAnthropicModels();
+        if (requestId !== testRequestIdRef.current) return;
         setAnthropicModels(resp.models);
         setAnthropicModelsWarning(resp.warning ?? null);
         setAnthropicModelsError(resp.error ?? null);
-        if (!resp.error && resp.models.length > 0 && !resp.models.includes(config.model)) {
-          patch({ model: resp.models[0] });
-        }
       }
     } catch (err) {
       const message =
         isAxiosError(err) && !err.response
           ? 'Could not reach the backend — is the API server running?'
           : 'Test failed. Please check your settings.';
-      setTestResult({ success: false, message });
+      if (requestId === testRequestIdRef.current) {
+        setTestResult({ success: false, message, api_key_ok: false, provider_ok: false });
+      }
     } finally {
-      setTestState('done');
+      if (requestId === testRequestIdRef.current) {
+        setTestState('done');
+      }
     }
   }
 
@@ -192,17 +354,25 @@ export default function SettingsPage() {
   const lowThreshold = threshold < 85;
 
   // Derive connection status CSS class and display text
-  const isReachabilityOnly =
-    testResult?.success && testResult?.validation_level === 'reachability';
-
   const connClass =
     testState === 'loading'
       ? 'conn-status-loading'
-      : !testResult?.success
-        ? 'conn-status-err'
-        : isReachabilityOnly
+      : testResult?.success
+        ? 'conn-status-ok'
+        : testResult && isDiscoveryOnly(testResult)
           ? 'conn-status-info'
-          : 'conn-status-ok';
+          : testResult && isModelLevelTestFailure(testResult)
+            ? 'conn-status-warn'
+            : 'conn-status-err';
+
+  const showCloudModels =
+    config.provider === 'ollama_cloud' &&
+    cloudModels.length > 0 &&
+    (!apiKeyDirty || (testResult != null && isDiscoveryOnly(testResult)));
+  const showOpenaiModels =
+    config.provider === 'openai' && !apiKeyDirty && openaiModels.length > 0 && !openaiModelsError;
+  const showAnthropicModels =
+    config.provider === 'anthropic' && !apiKeyDirty && anthropicModels.length > 0 && !anthropicModelsError;
 
   return (
     <div className="settings-page">
@@ -403,7 +573,7 @@ export default function SettingsPage() {
                 <select
                   className="form-input form-select"
                   value={config.model}
-                  onChange={(e) => patch({ model: e.target.value })}
+                  onChange={(e) => patchModel(e.target.value)}
                 >
                   {ollamaModels.map((m) => (
                     <option key={m} value={m}>{m}</option>
@@ -414,8 +584,11 @@ export default function SettingsPage() {
                   type="text"
                   className="form-input"
                   value={config.model}
-                  onChange={(e) => patch({ model: e.target.value })}
+                  onChange={(e) => patchModel(e.target.value)}
                 />
+              )}
+              {ollamaModelsError && (
+                <p className="field-warning">⚠️ {ollamaModelsError}</p>
               )}
               <p className="field-helper-sm">(detected from your local Ollama)</p>
               <p className="field-helper">
@@ -450,16 +623,19 @@ export default function SettingsPage() {
                 className="form-input"
                 placeholder="sk-..."
                 value={config.api_key ?? ''}
-                onChange={(e) => patch({ api_key: e.target.value || null })}
+                onChange={(e) => {
+                  patch({ api_key: e.target.value || null });
+                  markApiKeyDirty();
+                }}
               />
             </div>
             <div className="field-group">
               <label className="field-label">Model</label>
-              {cloudModels.length > 0 ? (
+              {showCloudModels ? (
                 <select
                   className="form-input form-select"
                   value={config.model}
-                  onChange={(e) => patch({ model: e.target.value })}
+                  onChange={(e) => patchModel(e.target.value)}
                 >
                   <option value="">— select a model —</option>
                   {cloudModels.map((m) => (
@@ -502,6 +678,7 @@ export default function SettingsPage() {
                   const val = e.target.value;
                   setApiKeyDisplay(val);
                   patch({ api_key: val || null });
+                  markApiKeyDirty();
                 }}
               />
             </div>
@@ -513,17 +690,18 @@ export default function SettingsPage() {
                     type="text"
                     className="form-input"
                     value={config.model}
-                    onChange={(e) => patch({ model: e.target.value })}
+                    onChange={(e) => patchModel(e.target.value)}
                   />
                   <p className="field-error">{openaiModelsError}</p>
                 </>
-              ) : openaiModels.length > 0 ? (
+              ) : showOpenaiModels ? (
                 <>
                   <select
                     className="form-input form-select"
                     value={config.model}
-                    onChange={(e) => patch({ model: e.target.value })}
+                    onChange={(e) => patchModel(e.target.value)}
                   >
+                    <option value="">— select a model —</option>
                     {openaiModels.map((m) => (
                       <option key={m} value={m}>{m}</option>
                     ))}
@@ -567,6 +745,7 @@ export default function SettingsPage() {
                   const val = e.target.value;
                   setApiKeyDisplay(val);
                   patch({ api_key: val || null });
+                  markApiKeyDirty();
                 }}
               />
             </div>
@@ -578,17 +757,18 @@ export default function SettingsPage() {
                     type="text"
                     className="form-input"
                     value={config.model}
-                    onChange={(e) => patch({ model: e.target.value })}
+                    onChange={(e) => patchModel(e.target.value)}
                   />
                   <p className="field-error">{anthropicModelsError}</p>
                 </>
-              ) : anthropicModels.length > 0 ? (
+              ) : showAnthropicModels ? (
                 <>
                   <select
                     className="form-input form-select"
                     value={config.model}
-                    onChange={(e) => patch({ model: e.target.value })}
+                    onChange={(e) => patchModel(e.target.value)}
                   >
+                    <option value="">— select a model —</option>
                     {anthropicModels.map((m) => (
                       <option key={m} value={m}>{m}</option>
                     ))}
@@ -642,15 +822,19 @@ export default function SettingsPage() {
       </div>
 
       {/* ── Connection status ────────────────────────────────── */}
-      {testState !== 'idle' && (
+      {testState === 'loading' && (
+        <div className="conn-status conn-status-loading">⏳ Testing connection…</div>
+      )}
+      {testState === 'done' && testResult && (
         <div className={`conn-status ${connClass}`}>
-          {testState === 'loading' && '⏳ Testing connection…'}
-          {testState === 'done' && testResult?.success && isReachabilityOnly &&
-            `ℹ️ ${testResult.message}`}
-          {testState === 'done' && testResult?.success && !isReachabilityOnly &&
-            `✅ ${testResult.message}`}
-          {testState === 'done' && !testResult?.success &&
-            `❌ ${testResult?.message}`}
+          {testResult.success &&
+            `✅ ${testResultMessage(testResult, true)}`}
+          {!testResult.success && isDiscoveryOnly(testResult) &&
+            `ℹ️ ${testResultMessage(testResult, false)}`}
+          {!testResult.success && isModelLevelTestFailure(testResult) &&
+            `⚠️ ${testResultMessage(testResult, false)}`}
+          {!testResult.success && !isDiscoveryOnly(testResult) && !isModelLevelTestFailure(testResult) &&
+            `❌ ${testResultMessage(testResult, false)}`}
         </div>
       )}
       {testState === 'done' && testResult?.sapbert_status === 'ok' && (

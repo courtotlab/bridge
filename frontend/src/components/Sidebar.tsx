@@ -25,6 +25,20 @@ const STATUS_LABEL: Record<string, string> = {
   error: 'Error',
 };
 
+const LAYER_STATUS_LABEL: Record<keyof LayerStatus, Partial<Record<string, string>>> = {
+  layer1: {},
+  layer2: { warning: 'Retrieval not checked' },
+  layer3: {},
+};
+
+function layerStatusIcon(state: string): string {
+  return STATUS_ICON[state] ?? STATUS_ICON.warning;
+}
+
+function layerStatusLabel(key: keyof LayerStatus, state: string): string {
+  return LAYER_STATUS_LABEL[key][state] ?? STATUS_LABEL[state] ?? 'Unknown';
+}
+
 export default function Sidebar() {
   const [layerStatus, setLayerStatus] = useState<LayerStatus | null>(null);
 
@@ -74,8 +88,8 @@ export default function Sidebar() {
                   return (
                     <div key={key} className="sidebar-status-row">
                       <span className="sidebar-status-label">{rowLabel}</span>
-                      <span className="sidebar-status-icon" title={STATUS_LABEL[state]}>
-                        {STATUS_ICON[state]}
+                      <span className="sidebar-status-icon" title={layerStatusLabel(key, state)}>
+                        {layerStatusIcon(state)}
                       </span>
                     </div>
                   );

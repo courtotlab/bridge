@@ -20,13 +20,28 @@ export async function testConnection(config: AppConfig): Promise<ConnectionTestR
     '| api_key=', config.api_key ? 'set' : 'empty',
   );
   const { data } = await client.post<ConnectionTestResponse>('/config/test', config);
+  const normalized: ConnectionTestResponse = {
+    ...data,
+    success: Boolean(data.success),
+    message:
+      typeof data.message === 'string' && data.message.trim()
+        ? data.message
+        : data.success
+          ? 'Connection test succeeded.'
+          : 'Connection test failed. Please try again.',
+  };
+  if (import.meta.env.DEV && normalized.message !== data.message) {
+    console.warn('[configApi] testConnection response missing message:', data);
+  }
   console.log(
-    '[configApi] testConnection ← success=', data.success,
-    '| validation_level=', data.validation_level ?? 'n/a',
-    '| models=', data.available_models?.length ?? 0,
-    '| message=', data.message,
+    '[configApi] testConnection ← success=', normalized.success,
+    '| api_key_ok=', normalized.api_key_ok ?? 'n/a',
+    '| model_ok=', normalized.model_ok ?? 'n/a',
+    '| error_type=', normalized.error_type ?? 'n/a',
+    '| models=', normalized.available_models?.length ?? 0,
+    '| message=', normalized.message,
   );
-  return data;
+  return normalized;
 }
 
 export async function getOllamaModels(): Promise<string[]> {

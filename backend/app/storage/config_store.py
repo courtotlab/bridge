@@ -15,6 +15,30 @@ _sensitive: dict[str, str | None] = {
     "loinc_password": None,
 }
 
+# Connection-test result — held in memory, reset when config is saved
+_connection_tested: bool = False
+_connection_test_passed: bool = False
+
+
+def get_connection_tested() -> bool:
+    return _connection_tested
+
+
+def get_connection_test_passed() -> bool:
+    return _connection_test_passed
+
+
+def set_connection_result(passed: bool) -> None:
+    global _connection_tested, _connection_test_passed
+    _connection_tested = True
+    _connection_test_passed = passed
+
+
+def invalidate_connection_test() -> None:
+    global _connection_tested, _connection_test_passed
+    _connection_tested = False
+    _connection_test_passed = False
+
 
 def load_config() -> AppConfig:
     if not _CONFIG_FILE.exists():
@@ -38,3 +62,8 @@ def save_config(config: AppConfig) -> None:
 
 def get_sensitive(field: str) -> str | None:
     return _sensitive.get(field)
+
+
+def cache_api_key(value: str | None) -> None:
+    """Cache the api_key from a successful connection test, even before the user saves."""
+    _sensitive["api_key"] = value

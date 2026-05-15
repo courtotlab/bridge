@@ -5,6 +5,7 @@ from typing import Literal
 import requests
 
 from app.models.config import AppConfig, LayerStatus
+from app.storage.config_store import get_connection_test_passed, get_connection_tested
 
 _LayerState = Literal["ok", "warning", "disabled", "error"]
 
@@ -46,17 +47,12 @@ def compute_layer_status(config: AppConfig) -> LayerStatus:
             l2 = "warning"
 
     # Layer 3 — AI model
-    if config.provider == "ollama":
-        tags_url = config.base_url.rstrip("/") + "/api/tags"
-        if _server_reachable(tags_url):
-            l3: _LayerState = "ok"
-        else:
-            l3 = "warning"
+    # Reflects the last Test Connection result; resets to "warning" on save.
+    if get_connection_test_passed():
+        l3: _LayerState = "ok"
+    elif get_connection_tested():
+        l3 = "error"
     else:
-        # Cloud providers need an api_key
-        if config.api_key:
-            l3 = "ok"
-        else:
-            l3 = "warning"
+        l3 = "warning"
 
     return LayerStatus(layer1=l1, layer2=l2, layer3=l3)

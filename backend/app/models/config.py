@@ -38,3 +38,12 @@ class ConnectionTestResponse(BaseModel):
     message: str
     latency_ms: int | None = None
     available_models: list[str] | None = None
+    validation_level: str | None = None  # 'reachability' | 'generation'
+    sapbert_status: str | None = None    # 'ok' | 'unreachable' | 'skipped'
+    sapbert_message: str | None = None
+
+
+class ModelsListResponse(BaseModel):
+    models: list[str]
+    warning: str | None = None
+    error: str | None = None

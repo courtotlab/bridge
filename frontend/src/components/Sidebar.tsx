@@ -37,7 +37,11 @@ export default function Sidebar() {
   useEffect(() => {
     fetchStatus();
     const interval = setInterval(fetchStatus, 30_000);
-    return () => clearInterval(interval);
+    window.addEventListener('bridge:status-refresh', fetchStatus);
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('bridge:status-refresh', fetchStatus);
+    };
   }, []);
 
   return (

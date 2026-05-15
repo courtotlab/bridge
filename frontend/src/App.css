@@ -430,6 +430,18 @@ body {
   border: 1px solid #fecaca;
 }
 
+.conn-status-info {
+  background: #fffbeb;
+  color: #92400e;
+  border: 1px solid #fcd34d;
+}
+
+.conn-status-warn {
+  background: #fffbeb;
+  color: #78350f;
+  border: 1px solid #fcd34d;
+}
+
 /* ── Buttons ────────────────────────────────────────────────────────── */
 .btn-primary {
   padding: 9px 20px;

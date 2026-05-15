@@ -37,4 +37,19 @@ export interface ConnectionTestResponse {
   message: string;
   latency_ms?: number;
   available_models?: string[];
+  validation_level?: 'reachability' | 'generation';
+  sapbert_status?: 'ok' | 'unreachable' | 'skipped' | null;
+  sapbert_message?: string | null;
+}
+
+export interface OpenAIModelsResponse {
+  models: string[];
+  warning?: string;
+  error?: string;
+}
+
+export interface AnthropicModelsResponse {
+  models: string[];
+  warning?: string;
+  error?: string;
 }

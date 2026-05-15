@@ -1,15 +1,19 @@
 import { isAxiosError } from 'axios';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { getConfig, getOllamaModels, saveConfig, testConnection } from '../api/configApi';
+import { getAnthropicModels, getConfig, getOllamaModels, getOpenAIModels, saveConfig, testConnection } from '../api/configApi';
 import AccordionSection from '../components/AccordionSection';
 import type { AppConfig, ConnectionTestResponse, Provider, RetrievalMode } from '../types/config';
 
 const DEFAULT_MODEL: Record<Provider, string> = {
   ollama: 'llama3.2',
-  ollama_cloud: 'llama3.2',
-  openai: 'gpt-4o',
-  anthropic: 'claude-sonnet-4-20250514',
+  ollama_cloud: '',       // populated from /api/tags after first test
+  openai: '',
+  anthropic: '',
 };
+
+// Displayed in the API key field when a key is already loaded in backend memory.
+// Never sent to the backend — config.api_key always holds the real key.
+const MASKED_KEY_SENTINEL = '••••••••';
 
 type TestState = 'idle' | 'loading' | 'done';
 
@@ -31,21 +35,43 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState('');
 
+  // Display value for the API key field (openai / anthropic only).
+  // Kept separate from config.api_key so we can show the masked sentinel
+  // without ever sending it to the backend.
+  const [apiKeyDisplay, setApiKeyDisplay] = useState('');
+
   const [testState, setTestState] = useState<TestState>('idle');
   const [testResult, setTestResult] = useState<ConnectionTestResponse | null>(null);
-  const [testTime, setTestTime] = useState<number>(0);
 
+  // Models discovered from local Ollama via /api/ollama-models
   const [ollamaModels, setOllamaModels] = useState<string[]>([]);
   const ollamaDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Models returned by Ollama Cloud /api/tags (from testConnection response)
+  const [cloudModels, setCloudModels] = useState<string[]>([]);
+
+  // Models fetched from OpenAI / Anthropic after a successful connection test
+  const [openaiModels, setOpenaiModels] = useState<string[]>([]);
+  const [openaiModelsWarning, setOpenaiModelsWarning] = useState<string | null>(null);
+  const [openaiModelsError, setOpenaiModelsError] = useState<string | null>(null);
+
+  const [anthropicModels, setAnthropicModels] = useState<string[]>([]);
+  const [anthropicModelsWarning, setAnthropicModelsWarning] = useState<string | null>(null);
+  const [anthropicModelsError, setAnthropicModelsError] = useState<string | null>(null);
 
   // Load config on mount
   useEffect(() => {
     getConfig()
-      .then((c) => setConfig(c))
+      .then((c) => {
+        setConfig(c);
+        if (c.api_key && (c.provider === 'openai' || c.provider === 'anthropic')) {
+          setApiKeyDisplay(MASKED_KEY_SENTINEL);
+        }
+      })
       .catch(() => {});
   }, []);
 
-  // Fetch Ollama models when base_url changes (debounced 500 ms)
+  // Fetch Ollama Local models when base_url changes (debounced 500 ms)
   const fetchOllamaModels = useCallback(() => {
     if (ollamaDebounceRef.current) clearTimeout(ollamaDebounceRef.current);
     ollamaDebounceRef.current = setTimeout(() => {
@@ -69,6 +95,16 @@ export default function SettingsPage() {
   }
 
   function handleProviderChange(provider: Provider) {
+    setTestResult(null);
+    setTestState('idle');
+    setCloudModels([]);
+    setOpenaiModels([]);
+    setOpenaiModelsWarning(null);
+    setOpenaiModelsError(null);
+    setAnthropicModels([]);
+    setAnthropicModelsWarning(null);
+    setAnthropicModelsError(null);
+    setApiKeyDisplay('');
     patch({ provider, model: DEFAULT_MODEL[provider] });
   }
 
@@ -79,6 +115,14 @@ export default function SettingsPage() {
       await saveConfig(config);
       setDirty(false);
       setSaveMsg('Settings saved');
+      // Invalidate model dropdowns so the user must re-test after saving
+      setOpenaiModels([]);
+      setOpenaiModelsWarning(null);
+      setOpenaiModelsError(null);
+      setAnthropicModels([]);
+      setAnthropicModelsWarning(null);
+      setAnthropicModelsError(null);
+      window.dispatchEvent(new Event('bridge:status-refresh'));
     } catch {
       setSaveMsg('Failed to save settings.');
     } finally {
@@ -89,18 +133,56 @@ export default function SettingsPage() {
   async function handleTest() {
     setTestState('loading');
     setTestResult(null);
-    const start = Date.now();
+    console.log(
+      '[handleTest] provider=', config.provider,
+      '| model=', config.model || '(empty)',
+      '| api_key=', config.api_key ? 'set' : 'empty',
+    );
     try {
-      const result = await testConnection();
+      // Always forward current in-page config so unsaved api_key/model is used
+      const result = await testConnection(config);
       setTestResult(result);
-      setTestTime(Math.round((Date.now() - start) / 1000));
+
+      if (result.success) {
+        window.dispatchEvent(new Event('bridge:status-refresh'));
+      }
+
+      // Populate cloud model dropdown from /api/tags response
+      if (config.provider === 'ollama_cloud' && result.available_models?.length) {
+        console.log('[handleTest] cloudModels populated:', result.available_models);
+        setCloudModels(result.available_models);
+        // Auto-select first model only when none is chosen yet
+        if (!config.model) {
+          patch({ model: result.available_models[0] });
+        }
+      }
+
+      // Populate OpenAI / Anthropic model dropdowns after a successful test
+      if (result.success && config.provider === 'openai') {
+        const resp = await getOpenAIModels();
+        setOpenaiModels(resp.models);
+        setOpenaiModelsWarning(resp.warning ?? null);
+        setOpenaiModelsError(resp.error ?? null);
+        if (!resp.error && resp.models.length > 0 && !resp.models.includes(config.model)) {
+          patch({ model: resp.models[0] });
+        }
+      }
+
+      if (result.success && config.provider === 'anthropic') {
+        const resp = await getAnthropicModels();
+        setAnthropicModels(resp.models);
+        setAnthropicModelsWarning(resp.warning ?? null);
+        setAnthropicModelsError(resp.error ?? null);
+        if (!resp.error && resp.models.length > 0 && !resp.models.includes(config.model)) {
+          patch({ model: resp.models[0] });
+        }
+      }
     } catch (err) {
       const message =
         isAxiosError(err) && !err.response
           ? 'Could not reach the backend — is the API server running?'
           : 'Test failed. Please check your settings.';
       setTestResult({ success: false, message });
-      setTestTime(0);
     } finally {
       setTestState('done');
     }
@@ -108,6 +190,19 @@ export default function SettingsPage() {
 
   const threshold = Math.round(config.rag_auto_accept_threshold * 100);
   const lowThreshold = threshold < 85;
+
+  // Derive connection status CSS class and display text
+  const isReachabilityOnly =
+    testResult?.success && testResult?.validation_level === 'reachability';
+
+  const connClass =
+    testState === 'loading'
+      ? 'conn-status-loading'
+      : !testResult?.success
+        ? 'conn-status-err'
+        : isReachabilityOnly
+          ? 'conn-status-info'
+          : 'conn-status-ok';
 
   return (
     <div className="settings-page">
@@ -298,7 +393,8 @@ export default function SettingsPage() {
           ))}
         </div>
 
-        {config.provider === 'ollama' ? (
+        {/* ── Ollama Local ── */}
+        {config.provider === 'ollama' && (
           <div className="subsection">
             <p className="subsection-title">Ollama Local settings</p>
             <div className="field-group">
@@ -341,17 +437,12 @@ export default function SettingsPage() {
               </p>
             </div>
           </div>
-        ) : (
+        )}
+
+        {/* ── Ollama Cloud ── */}
+        {config.provider === 'ollama_cloud' && (
           <div className="subsection">
-            <div className="field-group">
-              <label className="field-label">Model</label>
-              <input
-                type="text"
-                className="form-input"
-                value={config.model}
-                onChange={(e) => patch({ model: e.target.value })}
-              />
-            </div>
+            <p className="subsection-title">Ollama Cloud settings</p>
             <div className="field-group">
               <label className="field-label">API key</label>
               <input
@@ -361,6 +452,164 @@ export default function SettingsPage() {
                 value={config.api_key ?? ''}
                 onChange={(e) => patch({ api_key: e.target.value || null })}
               />
+            </div>
+            <div className="field-group">
+              <label className="field-label">Model</label>
+              {cloudModels.length > 0 ? (
+                <select
+                  className="form-input form-select"
+                  value={config.model}
+                  onChange={(e) => patch({ model: e.target.value })}
+                >
+                  <option value="">— select a model —</option>
+                  {cloudModels.map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  className="form-input"
+                  disabled
+                  placeholder="Test connection to load models"
+                  value=""
+                />
+              )}
+              <p className="field-helper">
+                <span className="info-icon">ℹ️</span>{' '}
+                Click &quot;Test connection&quot; to discover available cloud models,
+                then select one and test again to validate your API key.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ── OpenAI ── */}
+        {config.provider === 'openai' && (
+          <div className="subsection">
+            <p className="subsection-title">OpenAI settings</p>
+            <div className="field-group">
+              <label className="field-label">API key</label>
+              <input
+                type="password"
+                className="form-input"
+                placeholder="sk-..."
+                value={apiKeyDisplay}
+                onFocus={() => {
+                  if (apiKeyDisplay === MASKED_KEY_SENTINEL) setApiKeyDisplay('');
+                }}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setApiKeyDisplay(val);
+                  patch({ api_key: val || null });
+                }}
+              />
+            </div>
+            <div className="field-group">
+              <label className="field-label">Model</label>
+              {openaiModelsError ? (
+                <>
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={config.model}
+                    onChange={(e) => patch({ model: e.target.value })}
+                  />
+                  <p className="field-error">{openaiModelsError}</p>
+                </>
+              ) : openaiModels.length > 0 ? (
+                <>
+                  <select
+                    className="form-input form-select"
+                    value={config.model}
+                    onChange={(e) => patch({ model: e.target.value })}
+                  >
+                    {openaiModels.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                  {openaiModelsWarning && (
+                    <p className="field-warning">⚠️ {openaiModelsWarning}</p>
+                  )}
+                </>
+              ) : (
+                <input
+                  type="text"
+                  className="form-input"
+                  disabled
+                  placeholder="Test connection to load models"
+                  value=""
+                />
+              )}
+              <p className="field-helper">
+                <span className="info-icon">ℹ️</span>{' '}
+                Click &quot;Test connection&quot; to discover available models.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* ── Anthropic ── */}
+        {config.provider === 'anthropic' && (
+          <div className="subsection">
+            <p className="subsection-title">Anthropic settings</p>
+            <div className="field-group">
+              <label className="field-label">API key</label>
+              <input
+                type="password"
+                className="form-input"
+                placeholder="sk-ant-..."
+                value={apiKeyDisplay}
+                onFocus={() => {
+                  if (apiKeyDisplay === MASKED_KEY_SENTINEL) setApiKeyDisplay('');
+                }}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setApiKeyDisplay(val);
+                  patch({ api_key: val || null });
+                }}
+              />
+            </div>
+            <div className="field-group">
+              <label className="field-label">Model</label>
+              {anthropicModelsError ? (
+                <>
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={config.model}
+                    onChange={(e) => patch({ model: e.target.value })}
+                  />
+                  <p className="field-error">{anthropicModelsError}</p>
+                </>
+              ) : anthropicModels.length > 0 ? (
+                <>
+                  <select
+                    className="form-input form-select"
+                    value={config.model}
+                    onChange={(e) => patch({ model: e.target.value })}
+                  >
+                    {anthropicModels.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                  {anthropicModelsWarning && (
+                    <p className="field-warning">⚠️ {anthropicModelsWarning}</p>
+                  )}
+                </>
+              ) : (
+                <input
+                  type="text"
+                  className="form-input"
+                  disabled
+                  placeholder="Test connection to load models"
+                  value=""
+                />
+              )}
+              <p className="field-helper">
+                <span className="info-icon">ℹ️</span>{' '}
+                Click &quot;Test connection&quot; to discover available models.
+              </p>
             </div>
           </div>
         )}
@@ -394,12 +643,24 @@ export default function SettingsPage() {
 
       {/* ── Connection status ────────────────────────────────── */}
       {testState !== 'idle' && (
-        <div className={`conn-status ${testState === 'loading' ? 'conn-status-loading' : testResult?.success ? 'conn-status-ok' : 'conn-status-err'}`}>
+        <div className={`conn-status ${connClass}`}>
           {testState === 'loading' && '⏳ Testing connection…'}
-          {testState === 'done' && testResult?.success &&
-            `✅ Connection OK — ${config.model} is ready. (tested ${testTime} s ago)`}
+          {testState === 'done' && testResult?.success && isReachabilityOnly &&
+            `ℹ️ ${testResult.message}`}
+          {testState === 'done' && testResult?.success && !isReachabilityOnly &&
+            `✅ ${testResult.message}`}
           {testState === 'done' && !testResult?.success &&
             `❌ ${testResult?.message}`}
+        </div>
+      )}
+      {testState === 'done' && testResult?.sapbert_status === 'ok' && (
+        <div className="conn-status conn-status-ok" style={{ marginTop: '6px' }}>
+          ✅ SapBERT server reachable
+        </div>
+      )}
+      {testState === 'done' && testResult?.sapbert_status === 'unreachable' && (
+        <div className="conn-status conn-status-warn" style={{ marginTop: '6px' }}>
+          ⚠️ SapBERT server not reachable at {config.sapbert_server_url} — candidate retrieval will not work. Switch to Public databases or check your server.
         </div>
       )}
     </div>

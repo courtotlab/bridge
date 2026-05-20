@@ -1,22 +1,38 @@
 export interface SingleMappingRequest {
   source_term: string;
   source_label?: string;
-  entity_type?: string;
+  source_type?: string;       // data type: numeric, text, boolean, etc.
+  entity_type?: string;       // clinical area: phenotype, disease, etc.
+  target_ontologies?: string; // undefined = auto-detect
 }
 
-export interface MappingAlternative {
+export interface AlternativeResult {
   code: string;
   term: string;
   ontology: string;
   confidence: number;
+  source?: string; // "llm" | "rag" | "direct"
+}
+
+export interface MappingMetadata {
+  model: string;
+  provider: string;
+  latency_ms?: number;
+  timestamp?: string;
+  prompt_tokens?: number;
+  completion_tokens?: number;
 }
 
 export interface SingleMappingResponse {
   source_term: string;
+  source_label?: string;
+  source_type?: string;
   target_code: string;
   target_term: string;
   ontology: string;
   confidence: number;
-  notes: string;
-  alternatives: MappingAlternative[];
+  logic_type: string;
+  notes?: string;
+  alternatives: AlternativeResult[];
+  metadata?: MappingMetadata;
 }

@@ -195,25 +195,127 @@ def _check_sapbert(config: AppConfig) -> tuple[str, str | None]:
 
 
 def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
-    tags_url = config.base_url.rstrip("/") + "/api/tags"
+    base_url = config.base_url.rstrip("/")
+    model = config.model.strip() if config.model else ""
+    tags_url = base_url + "/api/tags"
+
+    print(
+        f"[config/test] hit — provider='ollama' model={model!r} base_url={base_url!r}",
+        flush=True,
+    )
+
+    # Step 1 — Server reachability
     t0 = time.monotonic()
     try:
-        resp = _requests.get(tags_url, timeout=5)
-        resp.raise_for_status()
-        latency_ms = int((time.monotonic() - t0) * 1000)
-        data = resp.json()
+        tags_resp = _requests.get(tags_url, timeout=5)
+        tags_resp.raise_for_status()
+        data = tags_resp.json()
         available = [m["name"] for m in data.get("models", [])]
+        print(
+            f"[config/test] ollama /api/tags ← status={tags_resp.status_code} "
+            f"models_found={len(available)}",
+            flush=True,
+        )
+    except Exception:
         return ConnectionTestResponse(
-            success=True,
-            message=f"Connection OK — {config.model} is ready.",
-            latency_ms=latency_ms,
+            success=False,
+            message=f"Could not reach Ollama at {base_url} — is Ollama running?",
+            provider_ok=False,
+            api_key_ok=None,
+            model_ok=False,
+            error_type="network_error",
+        )
+
+    # Step 2 — Model availability
+    model_available = model in available
+    print(
+        f"[config/test] ollama model check — {model!r} available={model_available}",
+        flush=True,
+    )
+    if not model_available:
+        return ConnectionTestResponse(
+            success=False,
+            message=(
+                f"Ollama is running but model '{model}' is not available. "
+                f"Run `ollama pull {model}` to download it."
+            ),
             available_models=available,
+            provider_ok=True,
+            api_key_ok=None,
+            model_ok=False,
+            error_type="model_unavailable",
+        )
+
+    # Step 3 — Real inference test
+    chat_url = base_url + "/api/chat"
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": "Reply with only the word OK"}],
+        "stream": False,
+    }
+    print(f"[config/test] ollama /api/chat → model={model!r}", flush=True)
+    try:
+        chat_resp = _requests.post(chat_url, json=payload, timeout=30)
+    except _requests.Timeout:
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        print(
+            f"[config/test] ollama /api/chat ← TIMEOUT latency={latency_ms}ms",
+            flush=True,
+        )
+        return ConnectionTestResponse(
+            success=False,
+            message=(
+                "Ollama responded but inference timed out — "
+                "the model may still be loading. Try again in a moment."
+            ),
+            available_models=available,
+            provider_ok=True,
+            api_key_ok=None,
+            model_ok=False,
+            error_type="network_error",
         )
     except Exception as exc:
         return ConnectionTestResponse(
             success=False,
-            message=translate(exc, config.base_url),
+            message=translate(exc, base_url),
+            available_models=available,
+            provider_ok=True,
+            api_key_ok=None,
+            model_ok=False,
+            error_type="network_error",
         )
+
+    latency_ms = int((time.monotonic() - t0) * 1000)
+    try:
+        response_text = chat_resp.json().get("message", {}).get("content", "") or ""
+    except Exception:
+        response_text = chat_resp.text
+    print(
+        f"[config/test] ollama /api/chat ← status={chat_resp.status_code} "
+        f"latency={latency_ms}ms response={response_text[:60]!r}",
+        flush=True,
+    )
+
+    if not chat_resp.ok:
+        try:
+            body_msg = chat_resp.json().get("error") or chat_resp.text
+        except Exception:
+            body_msg = chat_resp.text
+        return ConnectionTestResponse(
+            success=False,
+            message=f"Ollama inference failed — {body_msg[:200]}",
+            available_models=available,
+            provider_ok=True,
+            api_key_ok=None,
+            model_ok=False,
+            error_type="unknown",
+        )
+
+    return model_validated_success(
+        message=f"Connection OK — {model} is ready.",
+        available_models=available,
+        latency_ms=latency_ms,
+    )
 
 
 _OLLAMA_CLOUD_BASE = "https://ollama.com"

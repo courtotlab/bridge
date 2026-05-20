@@ -14,10 +14,11 @@ dependencies = [
     "openai>=1.30",
     "anthropic>=0.25",
     "llm-ontology-mapper",
+    "ollama>=0.6.2",
 ]
 
 [tool.uv.sources]
-llm-ontology-mapper = { path = "../../llm-ontology-mapper", editable = true }
+llm-ontology-mapper = { git = "https://github.com/courtotlab/llm-ontology-mapper.git", rev = "7ba37cd53c138b0b1b1a92836a2881bb63476fb2" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

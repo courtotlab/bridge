@@ -1,6 +1,6 @@
 import { isAxiosError } from 'axios';
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { getAnthropicModels, getConfig, getOllamaModels, getOpenAIModels, saveConfig, testConnection } from '../api/configApi';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { getAnthropicModels, getConfig, getOpenAIModels, saveConfig, testConnection } from '../api/configApi';
 import AccordionSection from '../components/AccordionSection';
 import type { AppConfig, ConnectionTestResponse, Provider, RetrievalMode } from '../types/config';
 
@@ -51,9 +51,12 @@ export default function SettingsPage() {
   const [testState, setTestState] = useState<TestState>('idle');
   const [testResult, setTestResult] = useState<ConnectionTestResponse | null>(null);
 
-  // Models discovered from local Ollama via /api/ollama-models
-  const [ollamaModels, setOllamaModels] = useState<string[]>([]);
-  const ollamaDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Models returned by last successful Ollama Local test (from testConnection response)
+  const [ollamaLocalTestModels, setOllamaLocalTestModels] = useState<string[]>([]);
+  // True when base_url changed after the last successful Ollama Local test
+  const [ollamaBaseUrlDirty, setOllamaBaseUrlDirty] = useState(false);
+  // Model currently selected in the Ollama Local dropdown (set after test + on dropdown change)
+  const [ollamaLocalSelectedModel, setOllamaLocalSelectedModel] = useState<string>('');
 
   // Models returned by Ollama Cloud /api/tags (from testConnection response)
   const [cloudModels, setCloudModels] = useState<string[]>([]);
@@ -70,10 +73,6 @@ export default function SettingsPage() {
   // True when the API key field changed since the last successful connection test
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
 
-  // Avoid fetching Ollama models with default provider before GET /config returns
-  const [configLoaded, setConfigLoaded] = useState(false);
-  const [ollamaModelsError, setOllamaModelsError] = useState<string | null>(null);
-
   const testRequestIdRef = useRef(0);
   const configRef = useRef(config);
 
@@ -84,49 +83,12 @@ export default function SettingsPage() {
     getConfig()
       .then((c) => {
         setConfig(c);
-        setConfigLoaded(true);
         if (c.api_key && (c.provider === 'openai' || c.provider === 'anthropic')) {
           setApiKeyDisplay(MASKED_KEY_SENTINEL);
         }
       })
-      .catch(() => {
-        setConfigLoaded(true);
-      });
+      .catch(() => {});
   }, []);
-
-  // Fetch Ollama Local models when base_url changes (debounced 500 ms)
-  const fetchOllamaModels = useCallback(() => {
-    if (ollamaDebounceRef.current) clearTimeout(ollamaDebounceRef.current);
-    ollamaDebounceRef.current = setTimeout(() => {
-      if (config.provider !== 'ollama') return;
-      setOllamaModelsError(null);
-      getOllamaModels()
-        .then((models) => {
-          setOllamaModels(models);
-          setOllamaModelsError(null);
-        })
-        .catch((err) => {
-          setOllamaModels([]);
-          const detail =
-            isAxiosError(err) && err.response?.data && typeof err.response.data === 'object'
-              && 'detail' in err.response.data
-              ? String((err.response.data as { detail: unknown }).detail)
-              : null;
-          setOllamaModelsError(
-            detail ?? 'Could not reach Ollama — is it running at the server URL below?',
-          );
-        });
-    }, 500);
-  }, [config.provider]);
-
-  useEffect(() => {
-    if (!configLoaded || config.provider !== 'ollama') {
-      setOllamaModels([]);
-      setOllamaModelsError(null);
-      return;
-    }
-    fetchOllamaModels();
-  }, [configLoaded, config.base_url, config.provider, fetchOllamaModels]);
 
   function clearValidationResult() {
     setTestResult(null);
@@ -253,6 +215,9 @@ export default function SettingsPage() {
     setTestResult(null);
     setTestState('idle');
     setApiKeyDirty(false);
+    setOllamaLocalTestModels([]);
+    setOllamaBaseUrlDirty(false);
+    setOllamaLocalSelectedModel('');
     setCloudModels([]);
     setOpenaiModels([]);
     setOpenaiModelsWarning(null);
@@ -273,6 +238,10 @@ export default function SettingsPage() {
       setConfig(saved);
       setDirty(false);
       setSaveMsg('Settings saved');
+      if (saved.provider === 'ollama') {
+        setOllamaLocalTestModels([]);
+        setOllamaLocalSelectedModel('');
+      }
       window.dispatchEvent(new Event('bridge:status-refresh'));
     } catch {
       setSaveMsg('Failed to save settings.');
@@ -312,6 +281,24 @@ export default function SettingsPage() {
         setApiKeyDirty(false);
       }
       window.dispatchEvent(new Event('bridge:status-refresh'));
+
+      if (payload.provider === 'ollama' && result.success && result.available_models?.length) {
+        setOllamaLocalTestModels(result.available_models);
+        setOllamaBaseUrlDirty(false);
+        const savedModel = configRef.current.model;
+        const preselect = result.available_models.includes(savedModel)
+          ? savedModel
+          : result.available_models[0];
+        setOllamaLocalSelectedModel(preselect);
+        if (preselect !== savedModel) {
+          setConfig((prev) => {
+            const next = { ...prev, model: preselect };
+            configRef.current = next;
+            return next;
+          });
+          setDirty(true);
+        }
+      }
 
       if (CLOUD_PROVIDERS.includes(payload.provider)) {
         if (result.available_models?.length) {
@@ -364,6 +351,19 @@ export default function SettingsPage() {
           : testResult && isModelLevelTestFailure(testResult)
             ? 'conn-status-warn'
             : 'conn-status-err';
+
+  const showOllamaLocalModels =
+    config.provider === 'ollama' && ollamaLocalTestModels.length > 0 && !ollamaBaseUrlDirty;
+
+  const ollamaLocalConnectionMessage = useMemo(() => {
+    if (!testResult?.success || config.provider !== 'ollama') return null;
+    const n = testResult.available_models?.length ?? 0;
+    const countText = `${n} model${n !== 1 ? 's' : ''} available`;
+    if (ollamaLocalSelectedModel) {
+      return `Connection ${ollamaLocalSelectedModel} OK — ${countText}.`;
+    }
+    return `Connection OK — ${countText}. Select a model below.`;
+  }, [testResult, ollamaLocalSelectedModel, config.provider]);
 
   const showCloudModels =
     config.provider === 'ollama_cloud' &&
@@ -568,45 +568,60 @@ export default function SettingsPage() {
           <div className="subsection">
             <p className="subsection-title">Ollama Local settings</p>
             <div className="field-group">
-              <label className="field-label">Model</label>
-              {ollamaModels.length > 0 ? (
-                <select
-                  className="form-input form-select"
-                  value={config.model}
-                  onChange={(e) => patchModel(e.target.value)}
-                >
-                  {ollamaModels.map((m) => (
-                    <option key={m} value={m}>{m}</option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  type="text"
-                  className="form-input"
-                  value={config.model}
-                  onChange={(e) => patchModel(e.target.value)}
-                />
-              )}
-              {ollamaModelsError && (
-                <p className="field-warning">⚠️ {ollamaModelsError}</p>
-              )}
-              <p className="field-helper-sm">(detected from your local Ollama)</p>
-              <p className="field-helper">
-                <span className="info-icon">ℹ️</span>{' '}
-                Can&apos;t see your model? Run <code>ollama pull &lt;name&gt;</code>
-              </p>
-            </div>
-            <div className="field-group">
               <label className="field-label">Server URL</label>
               <input
                 type="text"
                 className="form-input"
                 value={config.base_url}
-                onChange={(e) => patch({ base_url: e.target.value })}
+                onChange={(e) => {
+                  patch({ base_url: e.target.value });
+                  setOllamaBaseUrlDirty(true);
+                  setOllamaLocalTestModels([]);
+                  setOllamaLocalSelectedModel('');
+                }}
               />
               <p className="field-helper">
                 <span className="info-icon">ℹ️</span>{' '}
-                Change only if Ollama runs on a different machine.
+                Change if Ollama runs on a different machine or via SSH tunnel.
+              </p>
+            </div>
+            <div className="field-group">
+              <label className="field-label">Model</label>
+              {showOllamaLocalModels ? (
+                <>
+                  <select
+                    className="form-input form-select"
+                    value={config.model}
+                    onChange={(e) => {
+                      const model = e.target.value;
+                      setConfig((prev) => {
+                        const next = { ...prev, model };
+                        configRef.current = next;
+                        return next;
+                      });
+                      setOllamaLocalSelectedModel(model);
+                      setDirty(true);
+                      setSaveMsg('');
+                    }}
+                  >
+                    {ollamaLocalTestModels.map((m) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                  <p className="field-helper">Select a model then save settings</p>
+                </>
+              ) : (
+                <input
+                  type="text"
+                  className="form-input"
+                  disabled
+                  placeholder={config.model || 'Test connection to load models'}
+                  value=""
+                />
+              )}
+              <p className="field-helper">
+                <span className="info-icon">ℹ️</span>{' '}
+                Click &quot;Test connection&quot; to discover available models.
               </p>
             </div>
           </div>
@@ -828,7 +843,9 @@ export default function SettingsPage() {
       {testState === 'done' && testResult && (
         <div className={`conn-status ${connClass}`}>
           {testResult.success &&
-            `✅ ${testResultMessage(testResult, true)}`}
+            `✅ ${config.provider === 'ollama' && ollamaLocalConnectionMessage
+              ? ollamaLocalConnectionMessage
+              : testResultMessage(testResult, true)}`}
           {!testResult.success && isDiscoveryOnly(testResult) &&
             `ℹ️ ${testResultMessage(testResult, false)}`}
           {!testResult.success && isModelLevelTestFailure(testResult) &&

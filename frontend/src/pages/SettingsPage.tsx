@@ -344,13 +344,15 @@ export default function SettingsPage() {
   const connClass =
     testState === 'loading'
       ? 'conn-status-loading'
-      : testResult?.success
-        ? 'conn-status-ok'
-        : testResult && isDiscoveryOnly(testResult)
-          ? 'conn-status-info'
-          : testResult && isModelLevelTestFailure(testResult)
-            ? 'conn-status-warn'
-            : 'conn-status-err';
+      : testResult?.success && testResult?.warning === 'inference_timeout'
+        ? 'conn-status-warn'
+        : testResult?.success
+          ? 'conn-status-ok'
+          : testResult && isDiscoveryOnly(testResult)
+            ? 'conn-status-info'
+            : testResult && isModelLevelTestFailure(testResult)
+              ? 'conn-status-warn'
+              : 'conn-status-err';
 
   const showOllamaLocalModels =
     config.provider === 'ollama' && ollamaLocalTestModels.length > 0 && !ollamaBaseUrlDirty;
@@ -842,7 +844,9 @@ export default function SettingsPage() {
       )}
       {testState === 'done' && testResult && (
         <div className={`conn-status ${connClass}`}>
-          {testResult.success &&
+          {testResult.success && testResult.warning === 'inference_timeout' &&
+            `⚠️ ${testResultMessage(testResult, true)}`}
+          {testResult.success && testResult.warning !== 'inference_timeout' &&
             `✅ ${config.provider === 'ollama' && ollamaLocalConnectionMessage
               ? ollamaLocalConnectionMessage
               : testResultMessage(testResult, true)}`}

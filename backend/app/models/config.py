@@ -45,6 +45,7 @@ class ConnectionTestResponse(BaseModel):
     api_key_ok: bool | None = None
     model_ok: bool | None = None
     error_type: str | None = None  # invalid_api_key, subscription_required, model_unavailable, ...
+    warning: str | None = None    # inference_timeout
 
 
 class ModelsListResponse(BaseModel):

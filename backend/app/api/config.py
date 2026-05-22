@@ -194,6 +194,163 @@ def _check_sapbert(config: AppConfig) -> tuple[str, str | None]:
     return "unreachable", msg
 
 
+# Ordered from smallest to largest — first match wins
+KNOWN_MODEL_SIZE_ORDER = [
+    # Sub 1B
+    "tinyllama",
+    "tinydolphin",
+    "qwen2:0.5b",
+    "qwen2.5:0.5b",
+    "smollm:135m",
+    "smollm:360m",
+    "smollm2:135m",
+    "smollm2:360m",
+    "phi3.5:mini",
+    # 1B range
+    "smollm:1.7b",
+    "smollm2:1.7b",
+    "qwen2:1.5b",
+    "qwen2.5:1.5b",
+    "llama3.2:1b",
+    "gemma3:1b",
+    "phi3:mini",
+    # 2B range
+    "gemma:2b",
+    "gemma2:2b",
+    "gemma3:2b",
+    "qwen2:2b",
+    "moondream",
+    # 3B range
+    "llama3.2:3b",
+    "llama3.2:latest",
+    "llama3.2",
+    "phi3:3b",
+    "phi3.5",
+    "phi4-mini",
+    "qwen2.5:3b",
+    "olmoe",
+    "stablelm2",
+    # 4B range
+    "gemma3:4b",
+    "phi3:medium",
+    "qwen3:4b",
+    # 7B range
+    "codellama:latest",
+    "codellama:7b",
+    "codellama",
+    "mistral:latest",
+    "mistral:7b",
+    "mistral",
+    "llama2:7b",
+    "llama2:latest",
+    "llama2",
+    "llama3:8b",
+    "llama3:latest",
+    "llama3",
+    "llama3.1:8b",
+    "llama3.1:latest",
+    "llama3.1",
+    "gemma:7b",
+    "gemma2:9b",
+    "gemma3:9b",
+    "gemma3:12b",
+    "qwen2:7b",
+    "qwen2.5:7b",
+    "qwen3:8b",
+    "qwen3:latest",
+    "qwen3",
+    "deepseek-r1:7b",
+    "deepseek-r1:8b",
+    "deepseek-coder:6.7b",
+    "deepseek-coder:latest",
+    "deepseek-coder",
+    "neural-chat",
+    "starling-lm",
+    "orca-mini",
+    "vicuna",
+    "openchat",
+    "zephyr",
+    "wizard-vicuna-uncensored",
+    "nous-hermes",
+    "solar",
+    "dolphin-mistral",
+    "dolphin-phi",
+    "wizard-math",
+    "medllama2",
+    "meditron",
+    # 13B range
+    "llama2:13b",
+    "codellama:13b",
+    "deepseek-r1:14b",
+    "qwen2.5:14b",
+    "qwen3:14b",
+    "phi4",
+    "mistral-nemo",
+    "mistral-small",
+    # 20B range
+    "gpt-oss:20b",
+    "command-r",
+    "mistral-small3.1:latest",
+    "mistral-small3.1",
+    # 22-27B range
+    "gemma3:27b",
+    "medgemma:27b",
+    "gemma2:27b",
+    "qwen3:30b",
+    "deepseek-r1:32b",
+    "qwen2.5:32b",
+    # 34B+
+    "codellama:34b",
+    "llama2:70b",
+    "llama3.1:70b",
+    "llama3:70b",
+    "llama3:70b-instruct",
+    "qwen2:72b",
+    "qwen2.5:72b",
+    "qwen3:32b",
+    "deepseek-r1:70b",
+    "command-r-plus",
+    "mixtral:8x7b",
+    "mixtral:8x22b",
+    "mixtral",
+    # 100B+
+    "gpt-oss:120b",
+    "llama3.1:405b",
+    "deepseek-r1:671b",
+]
+
+# Models that cannot do chat inference — always exclude
+EMBEDDING_MODELS = [
+    "nomic-embed-text",
+    "mxbai-embed",
+    "all-minilm",
+    "snowflake-arctic-embed",
+    "bge-m3",
+    "bge-large",
+    "nomic-bert",
+    "embed",
+]
+
+
+def pick_test_model(models: list[str]) -> str:
+    # Filter out embedding models that don't support /api/chat
+    chat_models = [
+        m for m in models
+        if not any(e in m.lower() for e in EMBEDDING_MODELS)
+    ]
+    if not chat_models:
+        chat_models = models
+
+    # Find the first match in the ordered list
+    for known in KNOWN_MODEL_SIZE_ORDER:
+        for available in chat_models:
+            if available.lower().startswith(known.lower()):
+                return available
+
+    # No match found in known list — fall back to shortest name as a rough proxy for smallest model
+    return min(chat_models, key=len)
+
+
 def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
     base_url = config.base_url.rstrip("/")
     tags_url = base_url + "/api/tags"
@@ -240,37 +397,41 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
             error_type="model_unavailable",
         )
 
-    # Step 3 — Inference test using the first available model
-    first_model = available[0]
+    # Step 3 — Inference test using the smallest available model
+    test_model = pick_test_model(available)
+    n = len(available)
     chat_url = base_url + "/api/chat"
     payload = {
-        "model": first_model,
+        "model": test_model,
         "messages": [{"role": "user", "content": "Reply with only OK"}],
         "stream": False,
     }
     print(
-        f"[config/test] ollama local inference test → model={first_model!r} (first available)",
+        f"[config/test] ollama local inference test → model={test_model!r} "
+        f"(selected as fastest available from {n} models)",
         flush=True,
     )
     try:
-        chat_resp = _requests.post(chat_url, json=payload, timeout=30)
+        chat_resp = _requests.post(chat_url, json=payload, timeout=60)
     except _requests.Timeout:
         latency_ms = int((time.monotonic() - t0) * 1000)
         print(
-            f"[config/test] ollama local inference test ← TIMEOUT latency={latency_ms}ms",
+            f"[config/test] ollama local inference test ← TIMEOUT — "
+            f"returning partial success (server reachable, {n} models available)",
             flush=True,
         )
         return ConnectionTestResponse(
-            success=False,
+            success=True,
             message=(
-                "Ollama responded but inference timed out — "
-                "the model may still be loading. Try again in a moment."
+                f"Connection OK — {n} model{'s' if n != 1 else ''} available. "
+                "(Inference test timed out — server is reachable but models may be slow to load.)"
             ),
             available_models=available,
+            latency_ms=latency_ms,
             provider_ok=True,
             api_key_ok=None,
-            model_ok=False,
-            error_type="network_error",
+            model_ok=None,
+            warning="inference_timeout",
         )
     except Exception as exc:
         return ConnectionTestResponse(

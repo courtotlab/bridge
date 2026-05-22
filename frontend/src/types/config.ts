@@ -55,6 +55,7 @@ export interface ConnectionTestResponse {
   api_key_ok?: boolean | null;
   model_ok?: boolean | null;
   error_type?: ConnectionTestErrorType | null;
+  warning?: string | null;
 }
 
 export interface OpenAIModelsResponse {

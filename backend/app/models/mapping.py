@@ -47,3 +47,31 @@ class SingleMappingResponse(BaseModel):
     notes: str | None = None
     alternatives: list[AlternativeResult] = []
     metadata: MappingMetadata | None = None
+
+
+class BatchMappingRequest(BaseModel):
+    column_map: dict  # keys: field_name, label, description, data_type (values are CSV column names or None)
+    clinical_area: str | None = None
+    use_rag: bool = True
+    auto_accept_threshold: float = 0.85
+
+
+class BatchRowResult(BaseModel):
+    row_index: int
+    field_name: str
+    label: str | None = None
+    suggested_code: str
+    suggested_term: str
+    ontology: str
+    confidence: float
+    logic_type: str
+    decision: str = "pending"   # "accepted" | "rejected" | "pending"
+    alternatives: list[AlternativeResult] = []
+
+
+class BatchMappingResponse(BaseModel):
+    job_id: str
+    total: int
+    completed: int
+    results: list[BatchRowResult]
+    status: str   # "running" | "done" | "cancelled"

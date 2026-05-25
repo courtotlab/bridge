@@ -61,7 +61,7 @@ npm install
 ollama pull llama3.2
 ```
 
-If you already have one installed, then run ollama serve and it should autopopulate models on frontend automatically, and the server url by default is typically 11434 for Ollama
+If you already have one installed, then run ollama serve and it should autopopulate models on frontend automatically, and the server url by default is typically 11434 for Ollama unless explicitly hosting on a different port
 
 ### 5. Start the backend
 

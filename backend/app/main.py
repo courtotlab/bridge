@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.batch import router as batch_router
 from app.api.config import router as config_router
 from app.api.health import router as health_router
 from app.api.mapping import router as mapping_router
@@ -46,3 +47,4 @@ async def _connection_error(request: Request, exc: requests.exceptions.Connectio
 app.include_router(health_router, prefix="/api")
 app.include_router(mapping_router, prefix="/api/map")
 app.include_router(config_router, prefix="/api/config")
+app.include_router(batch_router, prefix="/api/batch")

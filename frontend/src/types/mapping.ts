@@ -36,3 +36,31 @@ export interface SingleMappingResponse {
   alternatives: AlternativeResult[];
   metadata?: MappingMetadata;
 }
+
+export interface BatchUploadPreview {
+  filename: string;
+  row_count: number;
+  columns: string[];
+  preview: Record<string, string>[];
+}
+
+export interface BatchRowResult {
+  row_index: number;
+  field_name: string;
+  label?: string;
+  suggested_code: string;
+  suggested_term: string;
+  ontology: string;
+  confidence: number;
+  logic_type: string;
+  decision: 'accepted' | 'rejected' | 'pending';
+  alternatives: AlternativeResult[];
+}
+
+export interface BatchJobStatus {
+  job_id: string;
+  total: number;
+  completed: number;
+  results: BatchRowResult[];
+  status: 'running' | 'done' | 'cancelled';
+}

@@ -1,4 +1,6 @@
 import logging
+import uuid
+from typing import Any
 
 from app.models.mapping import (
     AlternativeResult,
@@ -8,10 +10,15 @@ from app.models.mapping import (
 )
 from app.storage.config_store import get_sensitive, load_config
 
+# ── Batch job store ──────────────────────────────────────────────────────────
+_batch_jobs: dict[str, dict] = {}
+
 logger = logging.getLogger(__name__)
 
 _CLOUD_PROVIDERS = {"openai", "anthropic", "ollama_cloud"}
 _OLLAMA_PROVIDERS = {"ollama", "ollama_cloud"}
+_OLLAMA_CLOUD_BASE = "https://ollama.com"
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0"}
 
 # Fix 2: frontend option values (lowercase, "/" → "_") → library entity_type
 _CLINICAL_AREA_MAP: dict[str, str | None] = {
@@ -132,7 +139,16 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
         "rag_auto_accept_threshold": config.rag_auto_accept_threshold,
     }
     if config.provider in _OLLAMA_PROVIDERS:
-        mapper_kwargs["base_url"] = config.base_url
+        from urllib.parse import urlparse
+        raw = (config.base_url or "").rstrip("/")
+        host = urlparse(raw).hostname or "" if raw else ""
+        effective_base = (
+            _OLLAMA_CLOUD_BASE
+            if config.provider == "ollama_cloud" and (not raw or host in _LOCAL_HOSTS)
+            else raw or None
+        )
+        mapper_kwargs["base_url"] = effective_base
+        print(f"[mapper_service] base_url: config={config.base_url!r} → effective={effective_base!r}")
 
     mapper = OntologyMapper(**mapper_kwargs)
     result = mapper.map_term(
@@ -239,3 +255,109 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
         alternatives=alternatives,
         metadata=metadata,
     )
+
+
+# ── Batch job functions ──────────────────────────────────────────────────────
+
+def start_batch_job(
+    records: list[dict[str, Any]],
+    column_map: dict,
+    clinical_area: str | None,
+    use_rag: bool,
+    auto_accept_threshold: float,
+) -> str:
+    import threading
+    job_id = str(uuid.uuid4())
+    _batch_jobs[job_id] = {
+        "status": "running",
+        "total": len(records),
+        "completed": 0,
+        "results": [],
+        "cancel": False,
+    }
+
+    def run():
+        from app.models.mapping import BatchRowResult
+        job = _batch_jobs[job_id]
+        for i, rec in enumerate(records):
+            if job["cancel"]:
+                job["status"] = "cancelled"
+                return
+            field_name_col = column_map.get("field_name") or "field_name"
+            label_col      = column_map.get("label")
+            desc_col       = column_map.get("description")
+            dtype_col      = column_map.get("data_type")
+
+            field_name  = rec.get(field_name_col, f"row_{i}")
+            label       = rec.get(label_col) if label_col else None
+            description = rec.get(desc_col) if desc_col else None
+            source_type = rec.get(dtype_col) if dtype_col else None
+
+            effective_label = label or description
+
+            req = SingleMappingRequest(
+                source_term=field_name,
+                source_label=effective_label,
+                source_type=source_type,
+                entity_type=clinical_area,
+            )
+            try:
+                resp = map_single_term(req)
+                confidence_pct = resp.confidence
+                decision = "accepted" if confidence_pct >= auto_accept_threshold else "pending"
+                if resp.target_code == "UNMAPPED":
+                    decision = "rejected"
+
+                row = BatchRowResult(
+                    row_index=i,
+                    field_name=field_name,
+                    label=effective_label,
+                    suggested_code=resp.target_code,
+                    suggested_term=resp.target_term,
+                    ontology=resp.ontology,
+                    confidence=resp.confidence,
+                    logic_type=resp.logic_type,
+                    decision=decision,
+                    alternatives=resp.alternatives,
+                )
+            except Exception:
+                row = BatchRowResult(
+                    row_index=i,
+                    field_name=field_name,
+                    label=effective_label,
+                    suggested_code="UNMAPPED",
+                    suggested_term="Error",
+                    ontology="",
+                    confidence=0.0,
+                    logic_type="llm",
+                    decision="rejected",
+                )
+            job["results"].append(row)
+            job["completed"] = i + 1
+        job["status"] = "done"
+
+    threading.Thread(target=run, daemon=True).start()
+    return job_id
+
+
+def get_batch_job(job_id: str) -> dict | None:
+    return _batch_jobs.get(job_id)
+
+
+def cancel_batch_job(job_id: str) -> bool:
+    job = _batch_jobs.get(job_id)
+    if job:
+        job["cancel"] = True
+        return True
+    return False
+
+
+def update_batch_decision(job_id: str, row_index: int, decision: str) -> bool:
+    job = _batch_jobs.get(job_id)
+    if not job:
+        return False
+    for row in job["results"]:
+        if row.row_index == row_index:
+            row.decision = decision
+            return True
+    return False

@@ -397,6 +397,21 @@
 }
 
 /* ── Decision chip ──────────────────────────────────────────────────── */
+
+.batch-table-scroll {
+  max-height: 560px;
+  overflow-y: auto;
+  overflow-x: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+}
+
+.batch-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f9fafb;
+}
 .batch-decision-chip {
   display: inline-block;
   padding: 3px 10px;

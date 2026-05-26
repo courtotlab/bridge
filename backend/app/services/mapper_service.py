@@ -83,6 +83,45 @@ def _validate_config() -> None:
         )
 
 
+def _build_retriever(config):
+    """Construct an OntologyRetriever from config, or None when retrieval is disabled."""
+    from llm_ontology_mapper import OntologyRetriever
+    if config.retrieval_mode == "disabled":
+        return None
+    kwargs: dict = {
+        "bioportal_api_key": get_sensitive("bioportal_api_key"),
+        "loinc_fhir_user":   config.loinc_username,
+        "loinc_fhir_pass":   get_sensitive("loinc_password"),
+    }
+    if config.retrieval_mode == "local":
+        kwargs["sapbert_url"] = config.sapbert_server_url
+    return OntologyRetriever(**kwargs)
+
+
+def _build_mapper_kwargs(config, retriever, *, ontologies: list[str] | None = None) -> dict:
+    """Build OntologyMapper constructor kwargs from config and a pre-built retriever."""
+    kwargs: dict = {
+        "provider":                  _normalise_provider(config.provider),
+        "model":                     config.model,
+        "api_key":                   get_sensitive("api_key"),
+        "ontologies":                ontologies,
+        "use_rag":                   config.retrieval_mode != "disabled",
+        "ontology_retriever":        retriever,
+        "rag_auto_accept_threshold": config.rag_auto_accept_threshold,
+    }
+    if config.provider in _OLLAMA_PROVIDERS:
+        from urllib.parse import urlparse
+        raw = (config.base_url or "").rstrip("/")
+        host = urlparse(raw).hostname or "" if raw else ""
+        effective_base = (
+            _OLLAMA_CLOUD_BASE
+            if config.provider == "ollama_cloud" and (not raw or host in _LOCAL_HOSTS)
+            else raw or None
+        )
+        kwargs["base_url"] = effective_base
+    return kwargs
+
+
 def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
     from llm_ontology_mapper import OntologyMapper, OntologyRetriever
     from llm_ontology_mapper.models import LogicType
@@ -278,6 +317,20 @@ def start_batch_job(
 
     def run():
         from app.models.mapping import BatchRowResult
+        from llm_ontology_mapper import OntologyMapper
+
+        # Initialise once for the entire batch — not once per term.
+        try:
+            _validate_config()
+            config = load_config()
+            mapped_entity_type = _map_entity_type(clinical_area)
+            retriever = _build_retriever(config)
+            mapper = OntologyMapper(**_build_mapper_kwargs(config, retriever))
+        except Exception as exc:
+            logger.error("Batch job %s failed during initialisation: %s", job_id, exc)
+            _batch_jobs[job_id]["status"] = "failed"
+            return
+
         job = _batch_jobs[job_id]
         for i, rec in enumerate(records):
             if job["cancel"]:
@@ -294,31 +347,52 @@ def start_batch_job(
             source_type = rec.get(dtype_col) if dtype_col else None
 
             effective_label = label or description
+            effective_term  = effective_label or field_name
 
-            req = SingleMappingRequest(
-                source_term=field_name,
-                source_label=effective_label,
-                source_type=source_type,
-                entity_type=clinical_area,
+            print(
+                f"[Batch] Mapping term {i + 1}/{len(records)}: \"{effective_term}\" | "
+                f"model: {_normalise_provider(config.provider)} / {config.model} | "
+                f"mode: {'no-rag' if config.retrieval_mode == 'disabled' else 'rag'}"
             )
+
             try:
-                resp = map_single_term(req)
-                confidence_pct = resp.confidence
+                result = mapper.map_term(
+                    source_term=effective_term,
+                    source_label=effective_label,
+                    source_type=source_type,
+                    entity_type=mapped_entity_type,
+                )
+                confidence_pct = result.confidence
                 decision = "accepted" if confidence_pct >= auto_accept_threshold else "pending"
-                if resp.target_code == "UNMAPPED":
+                if result.target_code == "UNMAPPED":
                     decision = "rejected"
+
+                logic_type_val = result.logic_type
+                if hasattr(logic_type_val, "value"):
+                    logic_type_val = logic_type_val.value
+
+                alternatives = [
+                    AlternativeResult(
+                        code=a.code,
+                        term=a.term,
+                        ontology=a.ontology,
+                        confidence=a.confidence,
+                        source=getattr(a, "source", "llm"),
+                    )
+                    for a in result.alternatives
+                ]
 
                 row = BatchRowResult(
                     row_index=i,
                     field_name=field_name,
                     label=effective_label,
-                    suggested_code=resp.target_code,
-                    suggested_term=resp.target_term,
-                    ontology=resp.ontology,
-                    confidence=resp.confidence,
-                    logic_type=resp.logic_type,
+                    suggested_code=result.target_code,
+                    suggested_term=result.target_term,
+                    ontology=result.ontology,
+                    confidence=result.confidence,
+                    logic_type=str(logic_type_val),
                     decision=decision,
-                    alternatives=resp.alternatives,
+                    alternatives=alternatives,
                 )
             except Exception:
                 row = BatchRowResult(

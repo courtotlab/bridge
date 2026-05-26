@@ -683,7 +683,7 @@ export default function BatchPage() {
               </div>
 
               {/* Table */}
-              <div style={{ overflowX: 'auto' }}>
+              <div className="batch-table-scroll">
                 <table className="batch-table">
                   <thead>
                     <tr>

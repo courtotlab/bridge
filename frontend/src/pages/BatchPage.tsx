@@ -306,7 +306,7 @@ export default function BatchPage() {
     for (const row of jobStatus.results) {
       if (type === 'accept_high' && row.confidence >= threshold) {
         updates[row.row_index] = 'accepted';
-      } else if (type === 'reject_unmapped' && row.suggested_code === 'UNMAPPED') {
+      } else if (type === 'reject_unmapped' && row.suggested_code.toUpperCase().includes('UNMAPPED')) {
         updates[row.row_index] = 'rejected';
       } else if (type === 'reset') {
         updates[row.row_index] = 'pending';

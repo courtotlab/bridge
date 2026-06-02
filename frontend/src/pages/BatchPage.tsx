@@ -7,6 +7,7 @@ import {
   startBatch,
   uploadPreview,
 } from '../api/batchApi';
+import { useSession } from '../context/SessionContext';
 import type { BatchJobStatus, BatchRowResult, BatchUploadPreview } from '../types/mapping';
 import './BatchPage.css';
 
@@ -160,6 +161,10 @@ export default function BatchPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  const { startSession, emitEvent, completeSession } = useSession();
+  const batchSessionIdRef = useRef<string | null>(null);
+  const lastCompletedRef = useRef<number>(0);
+
   // ── Polling ────────────────────────────────────────────────────────────────
 
   const stopPoll = useCallback(() => {
@@ -176,6 +181,30 @@ export default function BatchPage() {
       try {
         const status = await getBatchStatus(jobId);
         setJobStatus(status);
+
+        const sid = batchSessionIdRef.current;
+        if (sid && status.completed > lastCompletedRef.current) {
+          lastCompletedRef.current = status.completed;
+          emitEvent(sid, {
+            timestamp: new Date().toISOString(),
+            actor: 'system',
+            event_type: 'batch_progress',
+            payload: { completed: status.completed, total: status.total },
+          }).catch(console.error);
+        }
+
+        if (status.status === 'done' && sid) {
+          const mapped   = status.results.filter(r => !r.suggested_code.toUpperCase().includes('UNMAPPED')).length;
+          const unmapped = status.results.filter(r =>  r.suggested_code.toUpperCase().includes('UNMAPPED')).length;
+          emitEvent(sid, {
+            timestamp: new Date().toISOString(),
+            actor: 'system',
+            event_type: 'batch_mapping_complete',
+            payload: { mapped, unmapped },
+          }).catch(console.error);
+          completeSession(sid, 'complete', status).catch(console.error);
+        }
+
         if (status.status === 'done' || status.status === 'cancelled') {
           stopPoll();
           setPhase('review');
@@ -186,7 +215,7 @@ export default function BatchPage() {
     }, 1500);
 
     return stopPoll;
-  }, [jobId, phase, stopPoll]);
+  }, [jobId, phase, stopPoll, emitEvent, completeSession]);
 
   // ── File handling ──────────────────────────────────────────────────────────
 
@@ -262,7 +291,32 @@ export default function BatchPage() {
       });
       setJobId(job_id);
       setLocalDecisions({});
+      lastCompletedRef.current = 0;
       setPhase('running');
+
+      try {
+        const sid = await startSession('batch_map', {
+          filename: file.name,
+          row_count: preview.row_count,
+          clinical_area: clinicalArea || undefined,
+          auto_accept_threshold: autoAcceptThreshold / 100,
+        });
+        batchSessionIdRef.current = sid;
+        emitEvent(sid, {
+          timestamp: new Date().toISOString(),
+          actor: 'user',
+          event_type: 'batch_started',
+          payload: {
+            filename: file.name,
+            row_count: preview.row_count,
+            clinical_area: clinicalArea || null,
+            use_rag: useRag,
+            auto_accept_threshold: autoAcceptThreshold / 100,
+          },
+        }).catch(console.error);
+      } catch {
+        batchSessionIdRef.current = null;
+      }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Failed to start batch job.');
     } finally {
@@ -274,6 +328,16 @@ export default function BatchPage() {
 
   async function handleCancel() {
     if (!jobId) return;
+    const sid = batchSessionIdRef.current;
+    if (sid) {
+      emitEvent(sid, {
+        timestamp: new Date().toISOString(),
+        actor: 'user',
+        event_type: 'batch_cancelled',
+        payload: {},
+      }).catch(console.error);
+      completeSession(sid, 'error').catch(console.error);
+    }
     try {
       await cancelBatch(jobId);
     } catch {
@@ -296,6 +360,15 @@ export default function BatchPage() {
       current === newDecision ? 'pending' : newDecision;
     setLocalDecisions((prev) => ({ ...prev, [row.row_index]: next }));
     apiSetDecision(jobId, row.row_index, next).catch(() => {});
+    const sid = batchSessionIdRef.current;
+    if (sid) {
+      emitEvent(sid, {
+        timestamp: new Date().toISOString(),
+        actor: 'user',
+        event_type: 'row_decision',
+        payload: { row_index: row.row_index, field_name: row.field_name, code: row.suggested_code, term: row.suggested_term, decision: next },
+      }).catch(console.error);
+    }
   }
 
   async function bulkDecision(type: 'accept_high' | 'reject_unmapped' | 'reset') {
@@ -317,6 +390,16 @@ export default function BatchPage() {
     // Fire PATCH calls in background
     for (const [rowIdx, dec] of Object.entries(updates)) {
       apiSetDecision(jobId, Number(rowIdx), dec).catch(() => {});
+    }
+    const sid = batchSessionIdRef.current;
+    if (sid) {
+      const operationMap = { accept_high: 'accept_high', reject_unmapped: 'reject_unmapped', reset: 'reset_all' } as const;
+      emitEvent(sid, {
+        timestamp: new Date().toISOString(),
+        actor: 'user',
+        event_type: 'bulk_decision',
+        payload: { operation: operationMap[type], affected_count: Object.keys(updates).length },
+      }).catch(console.error);
     }
   }
 
@@ -348,6 +431,8 @@ export default function BatchPage() {
     setSearchQuery('');
     setError(null);
     stopPoll();
+    batchSessionIdRef.current = null;
+    lastCompletedRef.current = 0;
   }
 
   // ── Derived stats ──────────────────────────────────────────────────────────

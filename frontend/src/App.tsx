@@ -1,6 +1,7 @@
 import { Navigate, Route, BrowserRouter as Router, Routes } from 'react-router-dom';
 import './App.css';
 import Sidebar from './components/Sidebar';
+import { SessionProvider } from './context/SessionContext';
 import BatchPage from './pages/BatchPage';
 import ExportPage from './pages/ExportPage';
 import HistoryPage from './pages/HistoryPage';
@@ -11,6 +12,7 @@ import ValidatorPage from './pages/ValidatorPage';
 
 export default function App() {
   return (
+    <SessionProvider>
     <Router>
       <div className="app-shell">
         <Sidebar />
@@ -28,5 +30,6 @@ export default function App() {
         </main>
       </div>
     </Router>
+    </SessionProvider>
   );
 }

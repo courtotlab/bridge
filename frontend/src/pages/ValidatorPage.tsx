@@ -1,6 +1,7 @@
 import { useState } from 'react';
 
 import { validateCodes } from '../api/validatorApi';
+import { useSession } from '../context/SessionContext';
 import type { ValidateCodeResult } from '../types/validator';
 import './ValidatorPage.css';
 
@@ -43,19 +44,56 @@ export default function ValidatorPage() {
   const [loading, setLoading]   = useState(false);
   const [error, setError]       = useState<string | null>(null);
 
+  const { startSession, emitEvent, completeSession } = useSession();
+
   async function handleCheck() {
     const codes = parseCodes(rawInput);
     if (!codes.length) return;
 
     setLoading(true);
     setError(null);
+
+    let sid: string | null = null;
+    try {
+      sid = await startSession('validation', { codes });
+      emitEvent(sid, {
+        timestamp: new Date().toISOString(),
+        actor: 'user',
+        event_type: 'session_started',
+        payload: { code_count: codes.length },
+      }).catch(console.error);
+    } catch {
+      // session recording unavailable — continue without logging
+    }
+
     try {
       const resp = await validateCodes({ codes });
       setResults(resp.results);
+      if (sid) {
+        const valid_count      = resp.results.filter(r => r.status === 'valid').length;
+        const deprecated_count = resp.results.filter(r => r.status === 'deprecated').length;
+        const not_found_count  = resp.results.filter(r => r.status === 'not-found').length;
+        emitEvent(sid, {
+          timestamp: new Date().toISOString(),
+          actor: 'system',
+          event_type: 'validation_complete',
+          payload: { total: resp.results.length, valid_count, deprecated_count, not_found_count },
+        }).catch(console.error);
+        completeSession(sid, 'complete', { results: resp.results }).catch(console.error);
+      }
     } catch (err: unknown) {
       const detail =
         (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
       setError(detail ?? 'Something went wrong. Please try again.');
+      if (sid) {
+        emitEvent(sid, {
+          timestamp: new Date().toISOString(),
+          actor: 'system',
+          event_type: 'session_error',
+          payload: { message: detail ?? 'Unknown error' },
+        }).catch(console.error);
+        completeSession(sid, 'error').catch(console.error);
+      }
     } finally {
       setLoading(false);
     }

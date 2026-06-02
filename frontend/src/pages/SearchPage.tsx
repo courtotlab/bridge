@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getConfig } from '../api/configApi';
 import { mapSingleTerm } from '../api/mappingApi';
+import { useSession } from '../context/SessionContext';
 import type { AlternativeResult, SingleMappingResponse } from '../types/mapping';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -177,6 +178,9 @@ export default function SearchPage() {
   const [copied, setCopied] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const { startSession, emitEvent, completeSession } = useSession();
+  const sessionIdRef = useRef<string | null>(null);
+
   // On mount: check pipeline is configured
   useEffect(() => {
     getConfig()
@@ -190,7 +194,7 @@ export default function SearchPage() {
       });
   }, []);
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!sourceTerm.trim()) {
       setTermError('Field name is required.');
@@ -205,6 +209,23 @@ export default function SearchPage() {
     const onto =
       targetOntology === 'Auto-detect' ? undefined : targetOntology.toUpperCase();
 
+    try {
+      const sid = await startSession('term_search', {
+        term: sourceTerm.trim(),
+        clinical_area: clinicalArea || undefined,
+        target_ontology: onto,
+      });
+      sessionIdRef.current = sid;
+      emitEvent(sid, {
+        timestamp: new Date().toISOString(),
+        actor: 'user',
+        event_type: 'session_started',
+        payload: { term: sourceTerm.trim(), clinical_area: clinicalArea || null, target_ontology: onto ?? null },
+      }).catch(console.error);
+    } catch {
+      sessionIdRef.current = null;
+    }
+
     mapSingleTerm({
       source_term: sourceTerm.trim(),
       source_label: sourceLabel.trim() || undefined,
@@ -217,6 +238,16 @@ export default function SearchPage() {
         const sorted = [...res.alternatives].sort((a, b) => b.confidence - a.confidence);
         setBestMatch(res);
         setAltList(sorted);
+        const sid = sessionIdRef.current;
+        if (sid) {
+          emitEvent(sid, {
+            timestamp: new Date().toISOString(),
+            actor: 'system',
+            event_type: 'mapping_complete',
+            payload: { code: res.target_code, term: res.target_term, confidence: res.confidence, logic_type: res.logic_type },
+          }).catch(console.error);
+          completeSession(sid, 'complete', res).catch(console.error);
+        }
       })
       .catch((err) => {
         if (isAxiosError(err)) {
@@ -239,6 +270,19 @@ export default function SearchPage() {
           }
         } else {
           setPageError({ kind: 'generic', message: 'An unexpected error occurred.' });
+        }
+        const sid = sessionIdRef.current;
+        if (sid) {
+          const message = isAxiosError(err)
+            ? (err.response?.data?.detail ?? 'Unknown error')
+            : 'An unexpected error occurred.';
+          emitEvent(sid, {
+            timestamp: new Date().toISOString(),
+            actor: 'system',
+            event_type: 'session_error',
+            payload: { message },
+          }).catch(console.error);
+          completeSession(sid, 'error').catch(console.error);
         }
       })
       .finally(() => setLoading(false));
@@ -280,6 +324,16 @@ export default function SearchPage() {
     setBestMatch(promoted);
     setAltList(newAlts);
     setCopied(false);
+
+    const sid = sessionIdRef.current;
+    if (sid) {
+      emitEvent(sid, {
+        timestamp: new Date().toISOString(),
+        actor: 'user',
+        event_type: 'alternative_promoted',
+        payload: { promoted_code: alt.code, demoted_code: bestMatch.target_code },
+      }).catch(console.error);
+    }
   }
 
   // ── Render ─────────────────────────────────────────────────────────────────

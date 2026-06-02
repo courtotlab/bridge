@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from app.api.batch import router as batch_router
 from app.api.config import router as config_router
 from app.api.health import router as health_router
+from app.api.history import router as history_router
 from app.api.mapping import router as mapping_router
 from app.api.validate import router as validate_router
 
@@ -50,3 +51,4 @@ app.include_router(mapping_router, prefix="/api/map")
 app.include_router(config_router, prefix="/api/config")
 app.include_router(batch_router, prefix="/api/batch")
 app.include_router(validate_router, prefix="/api/validate")
+app.include_router(history_router, prefix="/api/history")

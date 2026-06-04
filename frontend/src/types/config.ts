@@ -56,6 +56,7 @@ export interface ConnectionTestResponse {
   model_ok?: boolean | null;
   error_type?: ConnectionTestErrorType | null;
   warning?: string | null;
+  resident_model?: string | null;
 }
 
 export interface OpenAIModelsResponse {

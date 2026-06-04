@@ -46,6 +46,7 @@ class ConnectionTestResponse(BaseModel):
     model_ok: bool | None = None
     error_type: str | None = None  # invalid_api_key, subscription_required, model_unavailable, ...
     warning: str | None = None    # inference_timeout
+    resident_model: str | None = None  # ollama only: model currently loaded in VRAM (/api/ps)
 
 
 class ModelsListResponse(BaseModel):

@@ -1,6 +1,6 @@
 import { isAxiosError } from 'axios';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getAnthropicModels, getConfig, getOpenAIModels, saveConfig, testConnection } from '../api/configApi';
+import { getAnthropicModels, getConfig, getOllamaLoaded, getOpenAIModels, saveConfig, testConnection } from '../api/configApi';
 import AccordionSection from '../components/AccordionSection';
 import type { AppConfig, ConnectionTestResponse, Provider, RetrievalMode } from '../types/config';
 
@@ -57,6 +57,8 @@ export default function SettingsPage() {
   const [ollamaBaseUrlDirty, setOllamaBaseUrlDirty] = useState(false);
   // Model currently selected in the Ollama Local dropdown (set after test + on dropdown change)
   const [ollamaLocalSelectedModel, setOllamaLocalSelectedModel] = useState<string>('');
+  // Model currently resident in VRAM on the Ollama server (from /api/ps)
+  const [ollamaResidentModel, setOllamaResidentModel] = useState<string | null>(null);
 
   // Models returned by Ollama Cloud /api/tags (from testConnection response)
   const [cloudModels, setCloudModels] = useState<string[]>([]);
@@ -85,6 +87,9 @@ export default function SettingsPage() {
         setConfig(c);
         if (c.api_key && (c.provider === 'openai' || c.provider === 'anthropic')) {
           setApiKeyDisplay(MASKED_KEY_SENTINEL);
+        }
+        if (c.provider === 'ollama') {
+          getOllamaLoaded().then((r) => setOllamaResidentModel(r.resident_model)).catch(() => {});
         }
       })
       .catch(() => {});
@@ -218,6 +223,7 @@ export default function SettingsPage() {
     setOllamaLocalTestModels([]);
     setOllamaBaseUrlDirty(false);
     setOllamaLocalSelectedModel('');
+    setOllamaResidentModel(null);
     setCloudModels([]);
     setOpenaiModels([]);
     setOpenaiModelsWarning(null);
@@ -227,6 +233,9 @@ export default function SettingsPage() {
     setAnthropicModelsError(null);
     setApiKeyDisplay('');
     patch({ provider, model: DEFAULT_MODEL[provider] });
+    if (provider === 'ollama') {
+      getOllamaLoaded().then((r) => setOllamaResidentModel(r.resident_model)).catch(() => {});
+    }
   }
 
   async function handleSave() {
@@ -285,10 +294,16 @@ export default function SettingsPage() {
       if (payload.provider === 'ollama' && result.success && result.available_models?.length) {
         setOllamaLocalTestModels(result.available_models);
         setOllamaBaseUrlDirty(false);
+        if (result.resident_model != null) {
+          setOllamaResidentModel(result.resident_model);
+        }
         const savedModel = configRef.current.model;
+        const resident = result.resident_model ?? null;
         const preselect = result.available_models.includes(savedModel)
           ? savedModel
-          : result.available_models[0];
+          : (resident && result.available_models.includes(resident))
+            ? resident
+            : result.available_models[0];
         setOllamaLocalSelectedModel(preselect);
         if (preselect !== savedModel) {
           setConfig((prev) => {
@@ -620,6 +635,12 @@ export default function SettingsPage() {
                   placeholder={config.model || 'Test connection to load models'}
                   value=""
                 />
+              )}
+              {ollamaResidentModel && (
+                <p className="field-helper">
+                  On the current endpoint ({config.base_url}), the model &apos;{ollamaResidentModel}&apos; is
+                  currently loaded in memory — it makes sense to use this model to avoid a cold-load delay.
+                </p>
               )}
               <p className="field-helper">
                 <span className="info-icon">ℹ️</span>{' '}

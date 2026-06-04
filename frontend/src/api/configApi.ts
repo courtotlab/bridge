@@ -49,6 +49,11 @@ export async function getOllamaModels(): Promise<string[]> {
   return data;
 }
 
+export async function getOllamaLoaded(): Promise<{ resident_model: string | null }> {
+  const { data } = await client.get<{ resident_model: string | null }>('/config/ollama-loaded');
+  return data;
+}
+
 export async function getOpenAIModels(): Promise<OpenAIModelsResponse> {
   const { data } = await client.get<OpenAIModelsResponse>('/config/openai-models');
   return data;

@@ -128,6 +128,20 @@ def get_ollama_models() -> list[str]:
         raise HTTPException(status_code=503, detail=translate(exc, config.base_url)) from exc
 
 
+@router.get("/ollama-loaded")
+def get_ollama_loaded() -> dict:
+    """Return the model currently resident in Ollama's VRAM, or 503 if unreachable."""
+    config = load_config()
+    ps_url = config.base_url.rstrip("/") + "/api/ps"
+    try:
+        resp = _requests.get(ps_url, timeout=5)
+        resp.raise_for_status()
+        models = resp.json().get("models", [])
+        return {"resident_model": models[0]["name"] if models else None}
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Could not reach Ollama /api/ps") from exc
+
+
 # ── Connection test ───────────────────────────────────────────────────────────
 
 @router.post("/test", response_model=ConnectionTestResponse)
@@ -332,23 +346,28 @@ EMBEDDING_MODELS = [
 ]
 
 
-def pick_test_model(models: list[str]) -> str:
-    # Filter out embedding models that don't support /api/chat
+def pick_test_model(models: list[dict]) -> str:
+    """Pick the smallest chat model from /api/tags model dicts (each has at least 'name' and 'size')."""
     chat_models = [
         m for m in models
-        if not any(e in m.lower() for e in EMBEDDING_MODELS)
+        if not any(e in m["name"].lower() for e in EMBEDDING_MODELS)
     ]
     if not chat_models:
-        chat_models = models
+        chat_models = list(models)
 
-    # Find the first match in the ordered list
-    for known in KNOWN_MODEL_SIZE_ORDER:
-        for available in chat_models:
-            if available.lower().startswith(known.lower()):
-                return available
+    def rank_in_known(name: str) -> int:
+        lower = name.lower()
+        for i, known in enumerate(KNOWN_MODEL_SIZE_ORDER):
+            if lower.startswith(known.lower()):
+                return i
+        return len(KNOWN_MODEL_SIZE_ORDER)
 
-    # No match found in known list — fall back to shortest name as a rough proxy for smallest model
-    return min(chat_models, key=len)
+    def sort_key(m: dict) -> tuple:
+        # Sort by real byte size first (0 if missing), then by name-list position as tiebreaker
+        size = m.get("size") or 0
+        return (size, rank_in_known(m["name"]))
+
+    return min(chat_models, key=sort_key)["name"]
 
 
 def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
@@ -357,13 +376,14 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
 
     print(f"[config/test] ollama local → {tags_url}", flush=True)
 
-    # Step 1 — Server reachability
+    # Step 1 — Server reachability + model discovery
     t0 = time.monotonic()
     try:
         tags_resp = _requests.get(tags_url, timeout=5)
         tags_resp.raise_for_status()
         data = tags_resp.json()
-        available = [m["name"] for m in data.get("models", [])]
+        available_model_dicts = data.get("models", [])
+        available = [m["name"] for m in available_model_dicts]
         models_preview = ", ".join(available[:5])
         print(
             f"[config/test] ollama local ← status={tags_resp.status_code} "
@@ -397,10 +417,33 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
             error_type="model_unavailable",
         )
 
-    # Step 3 — Inference test using the smallest available model
-    test_model = pick_test_model(available)
+    # Step 2.5 — Check which model is resident in VRAM (/api/ps)
+    resident_model: str | None = None
+    ps_url = base_url + "/api/ps"
+    try:
+        ps_resp = _requests.get(ps_url, timeout=5)
+        if ps_resp.ok:
+            ps_models = ps_resp.json().get("models", [])
+            if ps_models:
+                resident_model = ps_models[0]["name"]
+    except Exception:
+        pass
+    print(
+        f"[config/test] ollama local /api/ps ← loaded={resident_model!r}",
+        flush=True,
+    )
+
+    # Step 3 — Inference test: prefer the resident (warm) model, else pick smallest
     n = len(available)
     chat_url = base_url + "/api/chat"
+    if resident_model:
+        test_model = resident_model
+        inference_timeout = 30
+        selection_note = "resident in VRAM — warm start"
+    else:
+        test_model = pick_test_model(available_model_dicts)
+        inference_timeout = 60
+        selection_note = f"selected as fastest available from {n} models"
     payload = {
         "model": test_model,
         "messages": [{"role": "user", "content": "Reply with only OK"}],
@@ -408,11 +451,11 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
     }
     print(
         f"[config/test] ollama local inference test → model={test_model!r} "
-        f"(selected as fastest available from {n} models)",
+        f"({selection_note})",
         flush=True,
     )
     try:
-        chat_resp = _requests.post(chat_url, json=payload, timeout=60)
+        chat_resp = _requests.post(chat_url, json=payload, timeout=inference_timeout)
     except _requests.Timeout:
         latency_ms = int((time.monotonic() - t0) * 1000)
         print(
@@ -432,6 +475,7 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
             api_key_ok=None,
             model_ok=None,
             warning="inference_timeout",
+            resident_model=resident_model,
         )
     except Exception as exc:
         return ConnectionTestResponse(
@@ -442,6 +486,7 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
             api_key_ok=None,
             model_ok=False,
             error_type="network_error",
+            resident_model=resident_model,
         )
 
     latency_ms = int((time.monotonic() - t0) * 1000)
@@ -463,15 +508,17 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
             api_key_ok=None,
             model_ok=False,
             error_type="unknown",
+            resident_model=resident_model,
         )
 
     # Step 4 — Return success with full model list
-    n = len(available)
-    return model_validated_success(
+    resp = model_validated_success(
         message=f"Connection OK — {n} model{'s' if n != 1 else ''} available.",
         available_models=available,
         latency_ms=latency_ms,
     )
+    resp.resident_model = resident_model
+    return resp
 
 
 _OLLAMA_CLOUD_BASE = "https://ollama.com"

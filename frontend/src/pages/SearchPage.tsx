@@ -307,7 +307,7 @@ export default function SearchPage() {
       ontology: alt.ontology,
       confidence: alt.confidence,
       logic_type: alt.source ?? bestMatch.logic_type,
-      notes: undefined,
+      notes: alt.notes,
     };
     // Demote current best match into alternatives
     const demoted: AlternativeResult = {
@@ -316,6 +316,7 @@ export default function SearchPage() {
       ontology: bestMatch.ontology,
       confidence: bestMatch.confidence,
       source: bestMatch.logic_type,
+      notes: bestMatch.notes,
     };
     const newAlts = [
       demoted,
@@ -375,7 +376,7 @@ export default function SearchPage() {
           {/* Human-readable label */}
           <div className="field-group">
             <label className="field-label" htmlFor="source-label">
-              Human-readable label{' '}
+              The label of the field/variable from your dataset{' '}
               <span className="optional-mark">(optional)</span>
             </label>
             <input
@@ -555,10 +556,30 @@ export default function SearchPage() {
             <p className="result-meta-line">
               <LogicTypeWithTooltip logicType={bestMatch.logic_type} />
             </p>
-
-            {bestMatch.notes && (
-              <blockquote className="result-notes">{bestMatch.notes}</blockquote>
+            {bestMatch.metadata && (
+              <>
+                <p className="result-meta-line">
+                  AI Provider: <strong>{bestMatch.metadata.provider}</strong>{' '}
+                  <span className="logic-type-tooltip" title="The AI model provider used for this mapping" aria-label="AI provider info">ℹ️</span>
+                </p>
+                <p className="result-meta-line">
+                  Model: <strong>{bestMatch.metadata.model}</strong>{' '}
+                  <span className="logic-type-tooltip" title="The specific model used to generate this mapping" aria-label="Model info">ℹ️</span>
+                </p>
+              </>
             )}
+
+            {(() => {
+              const raw = bestMatch.notes ?? '';
+              const cleaned = raw
+                .replace(/^Mapped\.\s*/i, '')
+                .replace(/^Mapped$/i, '')
+                .replace(/^RAG:\s*/i, '')
+                .trim();
+              return cleaned ? (
+                <blockquote className="result-notes">"{cleaned}"</blockquote>
+              ) : null;
+            })()}
 
             <div className="result-actions">
               <button

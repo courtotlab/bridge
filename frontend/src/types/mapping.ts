@@ -12,6 +12,7 @@ export interface AlternativeResult {
   ontology: string;
   confidence: number;
   source?: string; // "llm" | "rag" | "direct"
+  notes?: string;
 }
 
 export interface MappingMetadata {

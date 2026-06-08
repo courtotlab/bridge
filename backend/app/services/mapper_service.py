@@ -46,6 +46,25 @@ def _normalise_provider(provider: str) -> str:
     return "ollama" if provider == "ollama_cloud" else provider
 
 
+_ONTOLOGY_COMPARE_NORMALIZE: dict[str, str] = {
+    "HP": "HPO",      "HPO": "HPO",
+    "MONDO": "MONDO",
+    "NCIT": "NCIT",
+    "LOINC": "LOINC",
+    "ICD10": "ICD10", "ICD10CM": "ICD10",
+    "CHEBI": "CHEBI",
+    "SNOMED": "SNOMED", "SNOMEDCT": "SNOMED", "SNOMED-CT": "SNOMED",
+    "RXNORM": "RXNORM",
+}
+
+
+def _normalize_for_comparison(o: str | None) -> str:
+    if not o:
+        return ""
+    upper = o.upper().strip()
+    return _ONTOLOGY_COMPARE_NORMALIZE.get(upper, upper)
+
+
 def _infer_ontology_from_code(code: str) -> str:
     """Derive a canonical ontology label from a CURIE prefix."""
     if not code or ":" not in code:
@@ -264,6 +283,54 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
         alt_source = "llm" if result.alternatives else "empty"
 
     print(f"[mapper_service] alternatives built: {len(alternatives)} from {alt_source}")
+
+    # ── Layer 2: ontology filter / promote / fallback ────────────────────────
+    # Runs after Fix-4 (rag_auto_accept) and Fix-3 (alternatives assembly).
+    # When a specific ontology is selected, every returned item must belong to
+    # that ontology. Auto-detect (ontologies is None) skips this block entirely.
+    if ontologies is not None:
+        selected = _normalize_for_comparison(ontologies[0])
+
+        def _ont_of_result() -> str:
+            return _normalize_for_comparison(result.ontology) or \
+                   _normalize_for_comparison(_infer_ontology_from_code(result.target_code))
+
+        def _ont_of_alt(alt: AlternativeResult) -> str:
+            return _normalize_for_comparison(alt.ontology) or \
+                   _normalize_for_comparison(_infer_ontology_from_code(alt.code))
+
+        filtered_alts = [a for a in alternatives if _ont_of_alt(a) == selected]
+
+        if _ont_of_result() == selected:
+            alternatives = filtered_alts
+        elif filtered_alts:
+            # Promote the highest-confidence matching alternative to best match.
+            best_alt = filtered_alts[0]
+            from llm_ontology_mapper.models import LogicType as _LogicType
+            result = result.model_copy(update={
+                "target_code":  best_alt.code,
+                "target_term":  best_alt.term,
+                "ontology":     best_alt.ontology,
+                "confidence":   best_alt.confidence,
+                "logic_type":   _LogicType(best_alt.source) if best_alt.source in ("llm", "rag", "direct") else _LogicType.LLM,
+            })
+            alternatives = filtered_alts[1:]
+            print(f"[mapper_service] ontology filter: promoted {best_alt.code} from alternatives")
+        else:
+            print(f"[mapper_service] ontology filter: no match for '{selected}' — returning UNMAPPED")
+            return SingleMappingResponse(
+                source_term=request.source_term,
+                source_label=request.source_label,
+                source_type=request.source_type,
+                target_code="UNMAPPED",
+                target_term="NO_MATCH_IN_SELECTED_ONTOLOGY",
+                ontology=ontologies[0],
+                confidence=0.0,
+                logic_type="llm",
+                notes=f"No match found in {ontologies[0]}. Try Auto-detect or a different ontology.",
+                alternatives=[],
+                metadata=None,
+            )
 
     metadata: MappingMetadata | None = None
     if result.metadata:

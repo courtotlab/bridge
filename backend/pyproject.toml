@@ -1,0 +1,34 @@
+[project]
+name = "bridge-backend"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "python-multipart",
+    "pandas",
+    "openpyxl",
+    "requests>=2.31",
+    "httpx>=0.27",
+    "openai>=1.30",
+    "anthropic>=0.25",
+    "llm-ontology-mapper",
+    "ollama>=0.6.2",
+]
+
+[tool.uv.sources]
+llm-ontology-mapper = { git = "https://github.com/courtotlab/llm-ontology-mapper.git", rev = "75b95cb880737917fc0d3df5c0ba09aed50b00be" }
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-mock>=3.15.1",
+]

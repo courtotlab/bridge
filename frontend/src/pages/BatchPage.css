@@ -1,0 +1,565 @@
+/* ── Batch page shell ────────────────────────────────────────────────── */
+.batch-page {
+  max-width: 860px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 2rem 2rem;
+}
+
+.batch-subtitle {
+  margin: 0 0 24px;
+  font-size: 14px;
+  color: #6b7280;
+}
+
+/* ── Step indicator ─────────────────────────────────────────────────── */
+.batch-steps {
+  display: flex;
+  align-items: center;
+  margin-bottom: 28px;
+  gap: 0;
+}
+
+.batch-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #9ca3af;
+}
+
+.batch-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: 12px;
+  font-weight: 700;
+  background: #e5e7eb;
+  color: #6b7280;
+  flex-shrink: 0;
+}
+
+.batch-step--active .batch-step-num {
+  background: #111827;
+  color: #fff;
+}
+
+.batch-step--active .batch-step-label {
+  color: #111827;
+  font-weight: 600;
+}
+
+.batch-step--done .batch-step-num {
+  background: #6b7280;
+  color: #fff;
+}
+
+.batch-step-connector {
+  flex: 1;
+  height: 1px;
+  background: #e5e7eb;
+  margin: 0 8px;
+  min-width: 40px;
+}
+
+/* ── Section headings ───────────────────────────────────────────────── */
+.batch-section-heading {
+  margin: 0 0 16px;
+  font-size: 15px;
+  font-weight: 600;
+  color: #111827;
+}
+
+/* ── Upload zone ────────────────────────────────────────────────────── */
+.batch-upload-zone {
+  border: 2px dashed #d1d5db;
+  border-radius: 8px;
+  padding: 40px 24px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  background: #fafafa;
+  margin-bottom: 12px;
+}
+
+.batch-upload-zone:hover,
+.batch-upload-zone--dragging {
+  border-color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.batch-upload-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+  color: #6b7280;
+}
+
+.batch-upload-main {
+  font-size: 14px;
+  font-weight: 500;
+  color: #374151;
+  margin-bottom: 4px;
+}
+
+.batch-upload-sub {
+  font-size: 12px;
+  color: #9ca3af;
+}
+
+.batch-upload-hint {
+  font-size: 12px;
+  color: #6b7280;
+  text-align: center;
+}
+
+.batch-sample-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 12px;
+  color: #1d4ed8;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.batch-sample-link:hover {
+  color: #1e40af;
+}
+
+/* ── File selected state ────────────────────────────────────────────── */
+.batch-file-selected {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  font-size: 13px;
+  color: #166534;
+  margin-bottom: 20px;
+}
+
+.batch-file-name {
+  font-weight: 500;
+  flex: 1;
+}
+
+.batch-file-remove {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 14px;
+  color: #6b7280;
+  cursor: pointer;
+}
+
+.batch-file-remove:hover {
+  color: #dc2626;
+}
+
+/* ── Column mapping grid ────────────────────────────────────────────── */
+.batch-col-map-grid {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 10px 16px;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.batch-col-map-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+}
+
+.batch-col-map-helper {
+  font-size: 12px;
+  color: #6b7280;
+  margin: 0;
+  grid-column: 1 / -1;
+}
+
+/* ── Mapping options ────────────────────────────────────────────────── */
+.batch-options-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.batch-rag-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #374151;
+}
+
+.batch-rag-desc {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.batch-threshold-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #374151;
+}
+
+.batch-threshold-input {
+  width: 68px;
+  padding: 6px 8px;
+  font-size: 13px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  outline: none;
+  text-align: center;
+}
+
+.batch-threshold-input:focus {
+  border-color: #1d4ed8;
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.12);
+}
+
+/* ── Preview banner ─────────────────────────────────────────────────── */
+.batch-preview-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  margin-bottom: 20px;
+  gap: 16px;
+}
+
+.batch-preview-text {
+  font-size: 13px;
+  color: #374151;
+}
+
+.batch-preview-text strong {
+  color: #111827;
+}
+
+/* ── Progress section ───────────────────────────────────────────────── */
+.batch-progress-bar-track {
+  width: 100%;
+  height: 8px;
+  background: #e5e7eb;
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.batch-progress-bar-fill {
+  height: 100%;
+  background: #1d4ed8;
+  border-radius: 4px;
+  transition: width 0.4s ease;
+}
+
+.batch-progress-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: #374151;
+  margin-bottom: 12px;
+}
+
+.batch-progress-meta strong {
+  color: #111827;
+}
+
+.batch-confidence-summary {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
+
+.batch-conf-high { color: #166534; font-weight: 500; }
+.batch-conf-med  { color: #713f12; font-weight: 500; }
+.batch-conf-low  { color: #991b1b; font-weight: 500; }
+
+.batch-progress-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+/* ── Review section ─────────────────────────────────────────────────── */
+.batch-bulk-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.batch-btn-bulk {
+  padding: 7px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #374151;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, border-color 0.12s;
+}
+
+.batch-btn-bulk:hover {
+  background: #f9fafb;
+  border-color: #9ca3af;
+}
+
+.batch-filter-select {
+  padding: 6px 10px;
+  font-size: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #374151;
+  outline: none;
+}
+
+.batch-search-input {
+  padding: 6px 10px;
+  font-size: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #374151;
+  outline: none;
+  flex: 1;
+  min-width: 140px;
+}
+
+.batch-search-input:focus,
+.batch-filter-select:focus {
+  border-color: #1d4ed8;
+  box-shadow: 0 0 0 2px rgba(29, 78, 216, 0.1);
+}
+
+/* ── Review table ───────────────────────────────────────────────────── */
+.batch-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.batch-table th {
+  padding: 8px 12px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #6b7280;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+
+.batch-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #f3f4f6;
+  vertical-align: middle;
+}
+
+.batch-table-row:hover td {
+  background: #f9fafb;
+}
+
+.batch-code-main {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 12px;
+  color: #1d4ed8;
+  font-weight: 600;
+}
+
+.batch-code-term {
+  font-size: 11px;
+  color: #6b7280;
+  margin-top: 2px;
+}
+
+/* ── Decision chip ──────────────────────────────────────────────────── */
+
+.batch-table-scroll {
+  max-height: 560px;
+  overflow-y: auto;
+  overflow-x: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+}
+
+.batch-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f9fafb;
+}
+.batch-decision-chip {
+  display: inline-block;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 12px;
+  text-transform: capitalize;
+}
+
+.batch-decision-chip--accepted {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.batch-decision-chip--rejected {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.batch-decision-chip--pending {
+  background: #f3f4f6;
+  color: #6b7280;
+}
+
+/* ── Action buttons ─────────────────────────────────────────────────── */
+.batch-actions-cell {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.batch-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.12s;
+  color: #6b7280;
+}
+
+.batch-action-btn:hover {
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.batch-action-btn--active-accept {
+  color: #16a34a;
+  background: #dcfce7;
+}
+
+.batch-action-btn--active-reject {
+  color: #dc2626;
+  background: #fee2e2;
+}
+
+/* ── Expanded alternatives ──────────────────────────────────────────── */
+.batch-alt-row td {
+  background: #f9fafb;
+  padding: 8px 12px 8px 36px;
+}
+
+.batch-alt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.batch-alt-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #374151;
+}
+
+.batch-alt-code {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 11px;
+  color: #1d4ed8;
+  font-weight: 600;
+  min-width: 80px;
+}
+
+/* ── Row summary ────────────────────────────────────────────────────── */
+.batch-row-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 0 0;
+  font-size: 12px;
+  color: #6b7280;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.batch-row-summary-counts {
+  display: flex;
+  gap: 12px;
+}
+
+/* ── Export actions ─────────────────────────────────────────────────── */
+.batch-export-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+/* ── Confidence badge (reuse existing classes in App.css) ───────────── */
+.batch-conf-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+.batch-conf-badge--high {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.batch-conf-badge--med {
+  background: #fef9c3;
+  color: #713f12;
+}
+
+.batch-conf-badge--low {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+/* ── Error banner ───────────────────────────────────────────────────── */
+.batch-error {
+  margin-bottom: 16px;
+  padding: 12px 16px;
+  font-size: 13px;
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+}

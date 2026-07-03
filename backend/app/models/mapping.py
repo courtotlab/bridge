@@ -24,6 +24,7 @@ class AlternativeResult(BaseModel):
     ontology: str
     confidence: float
     source: str | None = None  # "llm" | "rag" | "direct"
+    explanation: str | None = None
 
 
 class MappingMetadata(BaseModel):
@@ -47,12 +48,14 @@ class SingleMappingResponse(BaseModel):
     notes: str | None = None
     alternatives: list[AlternativeResult] = []
     metadata: MappingMetadata | None = None
+    configured_provider: str | None = None
+    configured_model: str | None = None
+    retrieval_mode: str | None = None
 
 
 class BatchMappingRequest(BaseModel):
     column_map: dict  # keys: field_name, label, description, data_type (values are CSV column names or None)
     clinical_area: str | None = None
-    use_rag: bool = True
     auto_accept_threshold: float = 0.85
 
 
@@ -67,6 +70,9 @@ class BatchRowResult(BaseModel):
     logic_type: str
     decision: str = "pending"   # "accepted" | "rejected" | "pending"
     alternatives: list[AlternativeResult] = []
+    configured_provider: str | None = None
+    configured_model: str | None = None
+    retrieval_mode: str | None = None
 
 
 class BatchMappingResponse(BaseModel):

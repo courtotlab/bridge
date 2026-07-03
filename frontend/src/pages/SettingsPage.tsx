@@ -30,8 +30,6 @@ export default function SettingsPage() {
     use_ner: true,
     retrieval_mode: 'public',
     bioportal_api_key: null,
-    loinc_username: null,
-    loinc_password: null,
     sapbert_server_url: 'http://localhost:8000',
     rag_auto_accept_threshold: 0.85,
     provider: 'ollama',
@@ -475,32 +473,6 @@ export default function SettingsPage() {
                 <span className="info-icon">ℹ️</span>{' '}
                 Adds BioPortal as a fallback source. Get a free key at bioportal.bioontology.org
                 → Account → API key.
-              </p>
-            </div>
-
-            <div className="field-group">
-              <label className="field-label">
-                LOINC credentials <span className="optional-mark">(optional)</span>
-              </label>
-              <div className="input-row">
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder="username"
-                  value={config.loinc_username ?? ''}
-                  onChange={(e) => patch({ loinc_username: e.target.value || null })}
-                />
-                <input
-                  type="password"
-                  className="form-input"
-                  placeholder="password"
-                  value={config.loinc_password ?? ''}
-                  onChange={(e) => patch({ loinc_password: e.target.value || null })}
-                />
-              </div>
-              <p className="field-helper">
-                <span className="info-icon">ℹ️</span>{' '}
-                Required only for LOINC-specific searches.
               </p>
             </div>
           </div>

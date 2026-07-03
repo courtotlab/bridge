@@ -4,6 +4,7 @@ import requests.exceptions
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
 
 from app.api.batch import router as batch_router
 from app.api.config import router as config_router
@@ -11,6 +12,8 @@ from app.api.health import router as health_router
 from app.api.history import router as history_router
 from app.api.mapping import router as mapping_router
 from app.api.validate import router as validate_router
+
+load_dotenv()
 
 app = FastAPI(title="Bridge API", version="0.1.0")
 

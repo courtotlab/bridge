@@ -9,8 +9,6 @@ export interface AppConfig {
   // Layer 2
   retrieval_mode: RetrievalMode;
   bioportal_api_key: string | null;
-  loinc_username: string | null;
-  loinc_password: string | null;
   sapbert_server_url: string;
   rag_auto_accept_threshold: number; // 0.0–1.0
 

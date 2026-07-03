@@ -6,13 +6,12 @@ from app.models.config import AppConfig
 _CONFIG_DIR = Path.home() / ".ontology_mapper"
 _CONFIG_FILE = _CONFIG_DIR / "config.json"
 
-_SENSITIVE_FIELDS = {"api_key", "bioportal_api_key", "loinc_password"}
+_SENSITIVE_FIELDS = {"api_key", "bioportal_api_key"}
 
 # Module-level store for sensitive fields — held in memory, never written to disk
 _sensitive: dict[str, str | None] = {
     "api_key": None,
     "bioportal_api_key": None,
-    "loinc_password": None,
 }
 
 # Connection-test result — held in memory, reset when config is saved

@@ -12,7 +12,7 @@ export interface AlternativeResult {
   ontology: string;
   confidence: number;
   source?: string; // "llm" | "rag" | "direct"
-  notes?: string;
+  explanation?: string;
 }
 
 export interface MappingMetadata {
@@ -33,9 +33,13 @@ export interface SingleMappingResponse {
   ontology: string;
   confidence: number;
   logic_type: string;
-  notes?: string;
+  notes?: string;        // top-level best-match explanation (from backend)
+  explanation?: string;  // set on synthetic promoted responses (client-side only)
   alternatives: AlternativeResult[];
   metadata?: MappingMetadata;
+  configured_provider?: string;
+  configured_model?: string;
+  retrieval_mode?: string;
 }
 
 export interface BatchUploadPreview {
@@ -56,6 +60,9 @@ export interface BatchRowResult {
   logic_type: string;
   decision: 'accepted' | 'rejected' | 'pending';
   alternatives: AlternativeResult[];
+  configured_provider?: string;
+  configured_model?: string;
+  retrieval_mode?: string;
 }
 
 export interface BatchJobStatus {

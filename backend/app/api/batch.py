@@ -38,7 +38,8 @@ async def start_batch(
     file: UploadFile = File(...),
     column_map_json: str = Form(...),
     clinical_area: str = Form(None),
-    use_rag: bool = Form(True),
+    # Deprecated compatibility field: planned retrieval is controlled by Settings.retrieval_mode.
+    deprecated_use_rag: bool = Form(True, alias="use_rag"),
     auto_accept_threshold: float = Form(0.85),
 ):
     column_map = json.loads(column_map_json)
@@ -56,7 +57,6 @@ async def start_batch(
         records=records,
         column_map=column_map,
         clinical_area=clinical_area,
-        use_rag=use_rag,
         auto_accept_threshold=auto_accept_threshold,
     )
     return {"job_id": job_id, "total": len(records)}

@@ -19,6 +19,9 @@ _CLOUD_PROVIDERS = {"openai", "anthropic", "ollama_cloud"}
 _OLLAMA_PROVIDERS = {"ollama", "ollama_cloud"}
 _OLLAMA_CLOUD_BASE = "https://ollama.com"
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0"}
+_PLANNED_RAG_TOP_K = 5
+_PLANNED_MAX_CANDIDATES = 10
+_PLANNED_MAX_ALTERNATIVES = 5
 
 # Fix 2: frontend option values (lowercase, "/" → "_") → library entity_type
 _CLINICAL_AREA_MAP: dict[str, str | None] = {
@@ -44,6 +47,21 @@ def _map_entity_type(clinical_area: str | None) -> str | None:
 # Fix 5: "ollama_cloud" uses OllamaProvider — just needs base_url/api_key
 def _normalise_provider(provider: str) -> str:
     return "ollama" if provider == "ollama_cloud" else provider
+
+
+def _provider_extra_kwargs(config) -> dict:
+    """Build non-secret provider kwargs shared by OntologyMapper and LLMProviderFactory."""
+    kwargs: dict = {}
+    if config.provider in _OLLAMA_PROVIDERS:
+        from urllib.parse import urlparse
+        raw = (config.base_url or "").rstrip("/")
+        host = urlparse(raw).hostname or "" if raw else ""
+        kwargs["base_url"] = (
+            _OLLAMA_CLOUD_BASE
+            if config.provider == "ollama_cloud" and (not raw or host in _LOCAL_HOSTS)
+            else raw or None
+        )
+    return kwargs
 
 
 _ONTOLOGY_COMPARE_NORMALIZE: dict[str, str] = {
@@ -102,48 +120,70 @@ def _validate_config() -> None:
         )
 
 
-def _build_retriever(config):
-    """Construct an OntologyRetriever from config, or None when retrieval is disabled."""
-    from llm_ontology_mapper import OntologyRetriever
-    if config.retrieval_mode == "disabled":
-        return None
-    kwargs: dict = {
-        "bioportal_api_key": get_sensitive("bioportal_api_key"),
-        "loinc_fhir_user":   config.loinc_username,
-        "loinc_fhir_pass":   get_sensitive("loinc_password"),
+def _planned_limit_kwargs(config) -> dict:
+    """PlannedPipeline consumes these through OntologyMapper.map_term()."""
+    return {
+        "rag_top_k":        getattr(config, "rag_top_k", _PLANNED_RAG_TOP_K),
+        "max_candidates":   getattr(config, "max_candidates", _PLANNED_MAX_CANDIDATES),
+        "max_alternatives": getattr(config, "max_alternatives", _PLANNED_MAX_ALTERNATIVES),
     }
+
+
+def _build_llm_provider(config):
+    """Build the LLM provider explicitly so local planned mode can share it."""
+    from llm_ontology_mapper import LLMProviderFactory
+
+    return LLMProviderFactory.from_config(
+        provider=_normalise_provider(config.provider),
+        model=config.model,
+        api_key=get_sensitive("api_key"),
+        **_provider_extra_kwargs(config),
+    )
+
+
+def _build_mapper_kwargs(config, *, ontologies: list[str] | None = None) -> dict:
+    """Build OntologyMapper constructor kwargs for the planned pipeline."""
+    kwargs: dict = {
+        "ontologies":            ontologies,
+        "use_planned_pipeline":  True,
+        "retrieval_mode":        config.retrieval_mode,
+        **_planned_limit_kwargs(config),
+    }
+
     if config.retrieval_mode == "local":
-        kwargs["sapbert_url"] = config.sapbert_server_url
-    return OntologyRetriever(**kwargs)
+        from llm_ontology_mapper import LocalSemanticRetriever, PlannedPipeline
 
-
-def _build_mapper_kwargs(config, retriever, *, ontologies: list[str] | None = None) -> dict:
-    """Build OntologyMapper constructor kwargs from config and a pre-built retriever."""
-    kwargs: dict = {
-        "provider":                  _normalise_provider(config.provider),
-        "model":                     config.model,
-        "api_key":                   get_sensitive("api_key"),
-        "ontologies":                ontologies,
-        "use_rag":                   config.retrieval_mode != "disabled",
-        "ontology_retriever":        retriever,
-        "rag_auto_accept_threshold": config.rag_auto_accept_threshold,
-    }
-    if config.provider in _OLLAMA_PROVIDERS:
-        from urllib.parse import urlparse
-        raw = (config.base_url or "").rstrip("/")
-        host = urlparse(raw).hostname or "" if raw else ""
-        effective_base = (
-            _OLLAMA_CLOUD_BASE
-            if config.provider == "ollama_cloud" and (not raw or host in _LOCAL_HOSTS)
-            else raw or None
+        llm_provider = _build_llm_provider(config)
+        kwargs["llm_provider"] = llm_provider
+        kwargs["planned_pipeline"] = PlannedPipeline(
+            provider=llm_provider,
+            local_retriever=LocalSemanticRetriever(
+                sapbert_url=config.sapbert_server_url,
+            ),
         )
-        kwargs["base_url"] = effective_base
+        return kwargs
+
+    kwargs.update({
+        "provider": _normalise_provider(config.provider),
+        "model":    config.model,
+        "api_key":  get_sensitive("api_key"),
+        **_provider_extra_kwargs(config),
+    })
     return kwargs
 
 
+def _bridge_mapping_values(result) -> tuple[str, str, str]:
+    """Normalize planned-pipeline unmapped values to Bridge's legacy convention."""
+    target_code = result.target_code
+    target_term = result.target_term
+    ontology = result.ontology
+    if target_code == "UNKNOWN:UNMAPPED":
+        return "UNMAPPED", "UNMAPPED", ""
+    return target_code, target_term, ontology
+
+
 def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
-    from llm_ontology_mapper import OntologyMapper, OntologyRetriever
-    from llm_ontology_mapper.models import LogicType
+    from llm_ontology_mapper import OntologyMapper
 
     _validate_config()
     config = load_config()
@@ -171,42 +211,17 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
             f"'{config.provider}' → '{normalised_provider}'"
         )
 
-    retriever = None
-    if config.retrieval_mode != "disabled":
-        retriever_kwargs: dict = {
-            "bioportal_api_key": get_sensitive("bioportal_api_key"),
-            "loinc_fhir_user":   config.loinc_username,
-            "loinc_fhir_pass":   get_sensitive("loinc_password"),
-        }
-        if config.retrieval_mode == "local":
-            retriever_kwargs["sapbert_url"] = config.sapbert_server_url
-        retriever = OntologyRetriever(**retriever_kwargs)
-
     # Per-request ontology filter (None = auto-detect via entity_type)
     ontologies: list[str] | None = None
     if request.target_ontologies and request.target_ontologies.lower() != "auto":
         ontologies = [request.target_ontologies.upper()]
 
-    mapper_kwargs: dict = {
-        "provider":                normalised_provider,
-        "model":                   config.model,
-        "api_key":                 get_sensitive("api_key"),
-        "ontologies":              ontologies,
-        "use_rag":                 config.retrieval_mode != "disabled",
-        "ontology_retriever":      retriever,
-        "rag_auto_accept_threshold": config.rag_auto_accept_threshold,
-    }
-    if config.provider in _OLLAMA_PROVIDERS:
-        from urllib.parse import urlparse
-        raw = (config.base_url or "").rstrip("/")
-        host = urlparse(raw).hostname or "" if raw else ""
-        effective_base = (
-            _OLLAMA_CLOUD_BASE
-            if config.provider == "ollama_cloud" and (not raw or host in _LOCAL_HOSTS)
-            else raw or None
+    mapper_kwargs = _build_mapper_kwargs(config, ontologies=ontologies)
+    if "base_url" in mapper_kwargs:
+        print(
+            f"[mapper_service] base_url: config={config.base_url!r} "
+            f"→ effective={mapper_kwargs['base_url']!r}"
         )
-        mapper_kwargs["base_url"] = effective_base
-        print(f"[mapper_service] base_url: config={config.base_url!r} → effective={effective_base!r}")
 
     mapper = OntologyMapper(**mapper_kwargs)
     result = mapper.map_term(
@@ -216,76 +231,19 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
         entity_type=mapped_entity_type,    # Fix 2: normalised entity type
     )
 
-    # Fix 4: enforce rag_auto_accept_threshold in the service layer
-    # (the library stores this flag in debug metadata but never acts on it)
-    rag_debug = result.metadata.rag_debug if result.metadata else None
-    if (
-        rag_debug
-        and rag_debug.auto_accepted
-        and rag_debug.candidates_retrieved
-    ):
-        top = rag_debug.candidates_retrieved[0]
-        top_score = float(top.get("score", 0.0))
-        threshold = config.rag_auto_accept_threshold
-        should_override = (
-            result.target_code == "UNMAPPED"
-            or result.confidence < top_score
+    alternatives = [
+        AlternativeResult(
+            code=a.code,
+            term=a.term,
+            ontology=a.ontology,
+            confidence=a.confidence,
+            source=getattr(a, "source", "llm"),
+            explanation=getattr(a, "explanation", None),
         )
-        print(
-            f"[mapper_service] auto_accept: top_score={top_score} "
-            f"threshold={threshold} accepted={should_override}"
-        )
-        if should_override:
-            top_code = top.get("code", result.target_code)
-            result = result.model_copy(update={
-                "target_code": top_code,
-                "target_term": top.get("term", result.target_term),
-                "ontology":    _infer_ontology_from_code(top_code),
-                "confidence":  round(top_score, 3),
-                "logic_type":  LogicType.RAG,
-            })
-    else:
-        top_score = 0.0
-        threshold = config.rag_auto_accept_threshold
-        print(
-            f"[mapper_service] auto_accept: top_score={top_score} "
-            f"threshold={threshold} accepted=False"
-        )
-
-    # Fix 3: build alternatives from RAG candidates when library returns []
-    # (the library asks the LLM for alternatives but never reads them from JSON)
-    if not result.alternatives and rag_debug and rag_debug.candidates_retrieved:
-        built: list[AlternativeResult] = []
-        for c in rag_debug.candidates_retrieved:
-            code = c.get("code", "")
-            if code and code != result.target_code:
-                built.append(AlternativeResult(
-                    code=code,
-                    term=c.get("term", ""),
-                    ontology=_infer_ontology_from_code(code),
-                    confidence=round(float(c.get("score", 0.0)), 3),
-                    source="rag",
-                ))
-        built.sort(key=lambda x: x.confidence, reverse=True)
-        alternatives = built[:5]
-        alt_source = "rag_debug"
-    else:
-        alternatives = [
-            AlternativeResult(
-                code=a.code,
-                term=a.term,
-                ontology=a.ontology,
-                confidence=a.confidence,
-                source=getattr(a, "source", "llm"),
-            )
-            for a in result.alternatives
-        ]
-        alt_source = "llm" if result.alternatives else "empty"
-
-    print(f"[mapper_service] alternatives built: {len(alternatives)} from {alt_source}")
+        for a in result.alternatives
+    ]
 
     # ── Layer 2: ontology filter / promote / fallback ────────────────────────
-    # Runs after Fix-4 (rag_auto_accept) and Fix-3 (alternatives assembly).
     # When a specific ontology is selected, every returned item must belong to
     # that ontology. Auto-detect (ontologies is None) skips this block entirely.
     if ontologies is not None:
@@ -330,6 +288,9 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
                 notes=f"No match found in {ontologies[0]}. Try Auto-detect or a different ontology.",
                 alternatives=[],
                 metadata=None,
+                configured_provider=config.provider,
+                configured_model=config.model,
+                retrieval_mode=config.retrieval_mode,
             )
 
     metadata: MappingMetadata | None = None
@@ -347,19 +308,23 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
     logic_type_val = result.logic_type
     if hasattr(logic_type_val, "value"):
         logic_type_val = logic_type_val.value
+    target_code, target_term, ontology = _bridge_mapping_values(result)
 
     return SingleMappingResponse(
         source_term=request.source_term,   # always the original variable name
         source_label=request.source_label,
         source_type=request.source_type,
-        target_code=result.target_code,
-        target_term=result.target_term,
-        ontology=result.ontology,
+        target_code=target_code,
+        target_term=target_term,
+        ontology=ontology,
         confidence=result.confidence,
         logic_type=str(logic_type_val),
         notes=result.notes,
         alternatives=alternatives,
         metadata=metadata,
+        configured_provider=config.provider,
+        configured_model=config.model,
+        retrieval_mode=config.retrieval_mode,
     )
 
 
@@ -369,7 +334,6 @@ def start_batch_job(
     records: list[dict[str, Any]],
     column_map: dict,
     clinical_area: str | None,
-    use_rag: bool,
     auto_accept_threshold: float,
 ) -> str:
     import threading
@@ -391,8 +355,7 @@ def start_batch_job(
             _validate_config()
             config = load_config()
             mapped_entity_type = _map_entity_type(clinical_area)
-            retriever = _build_retriever(config)
-            mapper = OntologyMapper(**_build_mapper_kwargs(config, retriever))
+            mapper = OntologyMapper(**_build_mapper_kwargs(config))
         except Exception as exc:
             logger.error("Batch job %s failed during initialisation: %s", job_id, exc)
             _batch_jobs[job_id]["status"] = "failed"
@@ -419,7 +382,7 @@ def start_batch_job(
             print(
                 f"[Batch] Mapping term {i + 1}/{len(records)}: \"{effective_term}\" | "
                 f"model: {_normalise_provider(config.provider)} / {config.model} | "
-                f"mode: {'no-rag' if config.retrieval_mode == 'disabled' else 'rag'}"
+                f"retrieval_mode: {config.retrieval_mode}"
             )
 
             try:
@@ -429,9 +392,10 @@ def start_batch_job(
                     source_type=source_type,
                     entity_type=mapped_entity_type,
                 )
+                target_code, target_term, ontology = _bridge_mapping_values(result)
                 confidence_pct = result.confidence
                 decision = "accepted" if confidence_pct >= auto_accept_threshold else "pending"
-                if result.target_code == "UNMAPPED":
+                if target_code == "UNMAPPED":
                     decision = "rejected"
 
                 logic_type_val = result.logic_type
@@ -445,6 +409,7 @@ def start_batch_job(
                         ontology=a.ontology,
                         confidence=a.confidence,
                         source=getattr(a, "source", "llm"),
+                        explanation=getattr(a, "explanation", None),
                     )
                     for a in result.alternatives
                 ]
@@ -453,21 +418,24 @@ def start_batch_job(
                     row_index=i,
                     field_name=field_name,
                     label=effective_label,
-                    suggested_code=result.target_code,
-                    suggested_term=result.target_term,
-                    ontology=result.ontology,
+                    suggested_code=target_code,
+                    suggested_term=target_term,
+                    ontology=ontology,
                     confidence=result.confidence,
                     logic_type=str(logic_type_val),
                     decision=decision,
                     alternatives=alternatives,
+                    configured_provider=config.provider,
+                    configured_model=config.model,
+                    retrieval_mode=config.retrieval_mode,
                 )
-            except Exception:
+            except Exception as exc:
                 row = BatchRowResult(
                     row_index=i,
                     field_name=field_name,
                     label=effective_label,
                     suggested_code="UNMAPPED",
-                    suggested_term="Error",
+                    suggested_term=str(exc) or type(exc).__name__,
                     ontology="",
                     confidence=0.0,
                     logic_type="llm",

@@ -10,8 +10,6 @@ class AppConfig(BaseModel):
     # Layer 2 — Candidate retrieval
     retrieval_mode: Literal["public", "local", "disabled"] = "public"
     bioportal_api_key: str | None = None      # in-memory only, not saved to disk
-    loinc_username: str | None = None
-    loinc_password: str | None = None         # in-memory only, not saved to disk
     sapbert_server_url: str = "http://localhost:8000"
     rag_auto_accept_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
 

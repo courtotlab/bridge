@@ -84,14 +84,20 @@ def test_test_openai_invalid_api_key(mock_openai_cls: MagicMock):
     client.chat.completions.create.assert_not_called()
 
 
+@patch("llm_ontology_mapper.LLMProviderFactory")
 @patch("openai.OpenAI")
-def test_test_openai_chat_quota_error(mock_openai_cls: MagicMock):
+def test_test_openai_chat_quota_error(
+    mock_openai_cls: MagicMock,
+    mock_factory: MagicMock,
+):
     client = MagicMock()
     mock_openai_cls.return_value = client
     client.models.list.return_value = MagicMock(
         data=[MagicMock(id="gpt-4o"), MagicMock(id="gpt-3.5-turbo")],
     )
-    client.chat.completions.create.side_effect = _api_status_error(
+    provider = MagicMock()
+    mock_factory.from_config.return_value = provider
+    provider.complete.side_effect = _api_status_error(
         429,
         "You exceeded your current quota, please check your plan and billing details.",
     )
@@ -104,22 +110,37 @@ def test_test_openai_chat_quota_error(mock_openai_cls: MagicMock):
     assert result.model_ok is False
     assert result.error_type == "quota_exceeded"
     assert result.available_models is not None
+    client.chat.completions.create.assert_not_called()
+    provider.complete.assert_called_once()
 
 
+@pytest.mark.parametrize("model", ["gpt-4o-mini", "gpt-5"])
+@patch("llm_ontology_mapper.LLMProviderFactory")
 @patch("openai.OpenAI")
-def test_test_openai_valid_key_with_model_runs_chat(mock_openai_cls: MagicMock):
+def test_test_openai_valid_key_with_model_uses_library_provider(
+    mock_openai_cls: MagicMock,
+    mock_factory: MagicMock,
+    model: str,
+):
     client = MagicMock()
     mock_openai_cls.return_value = client
-    client.models.list.return_value = MagicMock(data=[MagicMock(id="gpt-4o")])
-    client.chat.completions.create.return_value = MagicMock(
-        choices=[MagicMock(message=MagicMock(content="OK"))],
-    )
+    client.models.list.return_value = MagicMock(data=[MagicMock(id=model)])
+    provider = MagicMock()
+    provider.complete.return_value = MagicMock(content="OK")
+    mock_factory.from_config.return_value = provider
 
     result = _test_openai(
-        AppConfig(provider="openai", model="gpt-4o", api_key="sk-valid"),
+        AppConfig(provider="openai", model=model, api_key="sk-valid"),
     )
 
-    client.chat.completions.create.assert_called_once()
+    client.chat.completions.create.assert_not_called()
+    mock_factory.from_config.assert_called_once_with(
+        provider="openai",
+        model=model,
+        api_key="sk-valid",
+        max_retries=1,
+    )
+    provider.complete.assert_called_once()
     assert result.model_ok is True
     assert result.success is True
 
@@ -158,12 +179,18 @@ def test_test_openai_unsupported_model_skips_chat(mock_openai_cls: MagicMock):
     client.chat.completions.create.assert_not_called()
 
 
+@patch("llm_ontology_mapper.LLMProviderFactory")
 @patch("openai.OpenAI")
-def test_test_openai_chat_model_not_found(mock_openai_cls: MagicMock):
+def test_test_openai_chat_model_not_found(
+    mock_openai_cls: MagicMock,
+    mock_factory: MagicMock,
+):
     client = MagicMock()
     mock_openai_cls.return_value = client
     client.models.list.return_value = MagicMock(data=[MagicMock(id="gpt-4o")])
-    client.chat.completions.create.side_effect = openai.NotFoundError(
+    provider = MagicMock()
+    mock_factory.from_config.return_value = provider
+    provider.complete.side_effect = openai.NotFoundError(
         "model not found",
         response=httpx.Response(
             404,
@@ -179,3 +206,5 @@ def test_test_openai_chat_model_not_found(mock_openai_cls: MagicMock):
     assert result.api_key_ok is True
     assert result.model_ok is False
     assert "invalid" not in result.message.lower()
+    client.chat.completions.create.assert_not_called()
+    provider.complete.assert_called_once()

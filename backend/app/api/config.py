@@ -758,17 +758,26 @@ def _test_openai(config: AppConfig) -> ConnectionTestResponse:
 
     print(f"[config/test] openai phase=model  model={model!r}", flush=True)
     try:
-        response = client.chat.completions.create(
+        from llm_ontology_mapper import LLMProviderFactory
+        from llm_ontology_mapper.providers import ChatMessage
+
+        provider = LLMProviderFactory.from_config(
+            provider="openai",
             model=model,
-            messages=[{"role": "user", "content": "Reply with only OK."}],
-            max_tokens=5,
+            api_key=api_key,
+            max_retries=1,
+        )
+        response = provider.complete(
+            [ChatMessage(role="user", content="Reply with only OK.")],
+            temperature=0.1,
+            max_tokens=64,
             timeout=30.0,
         )
-        text = response.choices[0].message.content or ""
+        text = response.content or ""
         print(f"[config/test] openai chat ← ok  response={text[:80]!r}", flush=True)
     except Exception as exc:
         print(f"[config/test] openai chat ← error  {type(exc).__name__}", flush=True)
-        return openai_chat_error_response(exc, available)
+        return openai_chat_error_response(exc.__cause__ or exc, available)
 
     latency_ms = int((time.monotonic() - t0) * 1000)
     return model_validated_success(

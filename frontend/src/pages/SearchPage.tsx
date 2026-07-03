@@ -19,11 +19,10 @@ const ONTOLOGY_FULL_NAMES: Record<string, string> = {
   RXNORM: 'RxNorm',
 };
 
-const LOGIC_TYPE_TOOLTIPS: Record<string, string> = {
-  llm: 'AI selected this code from candidates',
-  rag: 'Retrieved directly from ontology database',
-  direct: 'Exact match found',
-  hybrid: 'AI reasoning combined with database retrieval',
+const RETRIEVAL_MODE_TOOLTIPS: Record<string, string> = {
+  public: 'Uses the public ontology API for candidate retrieval',
+  local:  'Uses a locally-running SapBERT semantic retriever',
+  disabled: 'No retrieval — mapping relies on LLM knowledge alone',
 };
 
 const DATA_TYPE_OPTIONS = ['Numeric', 'Text', 'Boolean', 'Date', 'Categorical', 'Other'];
@@ -134,11 +133,11 @@ function ConfidenceBadge({ confidence }: { confidence: number }) {
   );
 }
 
-function LogicTypeWithTooltip({ logicType }: { logicType: string }) {
-  const tooltip = LOGIC_TYPE_TOOLTIPS[logicType.toLowerCase()] ?? logicType;
+function RetrievalModeWithTooltip({ mode }: { mode: string }) {
+  const tooltip = RETRIEVAL_MODE_TOOLTIPS[mode.toLowerCase()] ?? mode;
   return (
     <span className="logic-type-wrap">
-      Method: <strong>{logicType}</strong>{' '}
+      Method: <strong>{mode}</strong>{' '}
       <span className="logic-type-tooltip" title={tooltip} aria-label={tooltip}>
         ℹ️
       </span>
@@ -299,7 +298,9 @@ export default function SearchPage() {
 
   function handlePromote(alt: AlternativeResult) {
     if (!bestMatch) return;
-    // Build a synthetic response for the promoted alternative
+    // Build a synthetic response for the promoted alternative.
+    // configured_provider/configured_model/retrieval_mode are inherited via spread —
+    // they come from config, not from the individual result, so they stay stable.
     const promoted: SingleMappingResponse = {
       ...bestMatch,
       target_code: alt.code,
@@ -307,7 +308,8 @@ export default function SearchPage() {
       ontology: alt.ontology,
       confidence: alt.confidence,
       logic_type: alt.source ?? bestMatch.logic_type,
-      notes: alt.notes,
+      notes: undefined,
+      explanation: alt.explanation,
     };
     // Demote current best match into alternatives
     const demoted: AlternativeResult = {
@@ -316,7 +318,7 @@ export default function SearchPage() {
       ontology: bestMatch.ontology,
       confidence: bestMatch.confidence,
       source: bestMatch.logic_type,
-      notes: bestMatch.notes,
+      explanation: bestMatch.explanation ?? bestMatch.notes,
     };
     const newAlts = [
       demoted,
@@ -553,24 +555,32 @@ export default function SearchPage() {
             <p className="result-meta-line">
               Ontology: {getOntologyName(bestMatch.ontology)}
             </p>
-            <p className="result-meta-line">
-              <LogicTypeWithTooltip logicType={bestMatch.logic_type} />
-            </p>
-            {bestMatch.metadata && (
+            {bestMatch.retrieval_mode && (
+              <p className="result-meta-line">
+                <RetrievalModeWithTooltip mode={bestMatch.retrieval_mode} />
+              </p>
+            )}
+            {(bestMatch.configured_provider || bestMatch.configured_model) && (
               <>
-                <p className="result-meta-line">
-                  AI Provider: <strong>{bestMatch.metadata.provider}</strong>{' '}
-                  <span className="logic-type-tooltip" title="The AI model provider used for this mapping" aria-label="AI provider info">ℹ️</span>
-                </p>
-                <p className="result-meta-line">
-                  Model: <strong>{bestMatch.metadata.model}</strong>{' '}
-                  <span className="logic-type-tooltip" title="The specific model used to generate this mapping" aria-label="Model info">ℹ️</span>
-                </p>
+                {bestMatch.configured_provider && (
+                  <p className="result-meta-line">
+                    AI Provider: <strong>{bestMatch.configured_provider}</strong>{' '}
+                    <span className="logic-type-tooltip" title="The AI provider configured in Bridge settings" aria-label="AI provider info">ℹ️</span>
+                  </p>
+                )}
+                {bestMatch.configured_model && (
+                  <p className="result-meta-line">
+                    Model: <strong>{bestMatch.configured_model}</strong>{' '}
+                    <span className="logic-type-tooltip" title="The model configured in Bridge settings" aria-label="Model info">ℹ️</span>
+                  </p>
+                )}
               </>
             )}
 
             {(() => {
-              const raw = bestMatch.notes ?? '';
+              // For a promoted alternative, use its explanation field.
+              // For the original best match, fall back to notes (unchanged path).
+              const raw = bestMatch.explanation ?? bestMatch.notes ?? '';
               const cleaned = raw
                 .replace(/^Mapped\.\s*/i, '')
                 .replace(/^Mapped$/i, '')

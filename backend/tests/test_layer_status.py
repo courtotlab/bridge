@@ -82,7 +82,9 @@ def test_retrieval_disabled_sets_layer2_disabled():
 
 @patch("app.api.config._check_sapbert", return_value=("ok", None))
 @patch("app.api.config._test_openai")
-def test_sapbert_ok_on_connection_test_sets_retrieval_ok(mock_test_openai, _mock_sapbert):
+def test_sapbert_ok_on_connection_test_sets_retrieval_ok(
+    mock_test_openai, _mock_sapbert
+):
     from app.api.config import test_connection
     from app.models.config import ConnectionTestResponse
 
@@ -107,7 +109,9 @@ def test_sapbert_ok_on_connection_test_sets_retrieval_ok(mock_test_openai, _mock
 
 @patch("app.api.config._check_sapbert", return_value=("skipped", None))
 @patch("app.api.config._test_openai")
-def test_public_retrieval_stays_untested_after_llm_test(mock_test_openai, _mock_sapbert):
+def test_public_retrieval_stays_untested_after_llm_test(
+    mock_test_openai, _mock_sapbert
+):
     from app.api.config import test_connection
     from app.models.config import ConnectionTestResponse
 

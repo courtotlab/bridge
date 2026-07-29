@@ -7,8 +7,11 @@ import {
   startBatch,
   uploadPreview,
 } from '../api/batchApi';
+import OntologyMultiSelect from '../components/OntologyMultiSelect';
+import { ONTOLOGY_OPTIONS } from '../constants/ontologies';
 import { useSession } from '../context/SessionContext';
 import type { BatchJobStatus, BatchRowResult, BatchUploadPreview } from '../types/mapping';
+import { targetOntologiesOrNull } from '../utils/ontologyPayloads';
 import './BatchPage.css';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -137,6 +140,7 @@ export default function BatchPage() {
     data_type: null,
   });
   const [clinicalArea, setClinicalArea] = useState<string>('phenotype');
+  const [targetOntologies, setTargetOntologies] = useState<string[]>([]);
   const [useRag, setUseRag] = useState(true);
   const [autoAcceptThreshold, setAutoAcceptThreshold] = useState(85);
 
@@ -281,11 +285,13 @@ export default function BatchPage() {
     }
     setError(null);
     setStarting(true);
+    const selectedOntologies = targetOntologiesOrNull(targetOntologies);
     try {
       const { job_id } = await startBatch({
         file,
         columnMap,
         clinicalArea: clinicalArea || null,
+        targetOntologies,
         useRag,
         autoAcceptThreshold: autoAcceptThreshold / 100,
       });
@@ -299,6 +305,7 @@ export default function BatchPage() {
           filename: file.name,
           row_count: preview.row_count,
           clinical_area: clinicalArea || undefined,
+          target_ontologies: selectedOntologies,
           auto_accept_threshold: autoAcceptThreshold / 100,
         });
         batchSessionIdRef.current = sid;
@@ -310,6 +317,7 @@ export default function BatchPage() {
             filename: file.name,
             row_count: preview.row_count,
             clinical_area: clinicalArea || null,
+            target_ontologies: selectedOntologies,
             use_rag: useRag,
             auto_accept_threshold: autoAcceptThreshold / 100,
           },
@@ -420,6 +428,7 @@ export default function BatchPage() {
     setPreview(null);
     setColumnMap({ field_name: null, label: null, description: null, data_type: null });
     setClinicalArea('phenotype');
+    setTargetOntologies([]);
     setUseRag(true);
     setAutoAcceptThreshold(85);
     setPhase('upload');
@@ -609,6 +618,16 @@ export default function BatchPage() {
                 <p className="batch-rag-desc" style={{ marginTop: 4, marginLeft: 23 }}>
                   Recommended — slower but more accurate.
                 </p>
+              </div>
+
+              <div style={{ marginBottom: 16 }}>
+                <OntologyMultiSelect
+                  label="Target ontologies"
+                  options={ONTOLOGY_OPTIONS}
+                  selectedValues={targetOntologies}
+                  onChange={setTargetOntologies}
+                  helperText="Selected ontologies restrict the mapping results. Leave all unselected for automatic selection."
+                />
               </div>
 
               <div className="batch-threshold-row">

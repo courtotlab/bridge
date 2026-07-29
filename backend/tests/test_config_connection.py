@@ -1,12 +1,19 @@
 """Tests for the /api/config/test connection-test logic."""
+
 import pytest
 import requests as _requests
 
-from app.api.config import _OLLAMA_CLOUD_BASE, _ollama_cloud_base, _test_ollama, _test_ollama_cloud
+from app.api.config import (
+    _OLLAMA_CLOUD_BASE,
+    _ollama_cloud_base,
+    _test_ollama,
+    _test_ollama_cloud,
+)
 from app.models.config import AppConfig
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
 
 def _cfg(**kwargs) -> AppConfig:
     defaults = dict(
@@ -45,6 +52,7 @@ def _mock_chat_ok():
 
 # ── _ollama_cloud_base ────────────────────────────────────────────────────────
 
+
 class TestOllamaCloudBase:
     def test_localhost_replaced(self):
         cfg = _cfg(base_url="http://localhost:11434")
@@ -68,6 +76,7 @@ class TestOllamaCloudBase:
 
 
 # ── _test_ollama_cloud — no model selected (reachability path) ───────────────
+
 
 class TestOllamaCloudNoModel:
     def test_empty_model_returns_available_models(self, mocker):
@@ -118,6 +127,7 @@ class TestOllamaCloudNoModel:
 
 
 # ── _test_ollama_cloud — model selected (generation path) ────────────────────
+
 
 class TestOllamaCloudWithModel:
     def test_successful_chat_returns_success(self, mocker):
@@ -191,6 +201,7 @@ class TestOllamaCloudWithModel:
 
 
 # ── _test_ollama (local) — unaffected by cloud changes ───────────────────────
+
 
 class TestOllamaLocal:
     def test_uses_configured_base_url(self, mocker):

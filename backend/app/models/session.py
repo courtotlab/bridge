@@ -1,8 +1,10 @@
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from app.utils.ontology import normalize_target_ontologies
 
 
 class EventRecord(BaseModel):
@@ -18,8 +20,29 @@ class InputSummary(BaseModel):
     term: str | None = None
     codes: list[str] | None = None
     clinical_area: str | None = None
-    target_ontology: str | None = None
+    target_ontologies: list[str] | None = None
+    target_ontology: str | None = Field(default=None, exclude=True)
     auto_accept_threshold: float | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_ontology_metadata(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        normalized = dict(data)
+        try:
+            if normalized.get("target_ontologies") is not None:
+                normalized["target_ontologies"] = normalize_target_ontologies(
+                    normalized.get("target_ontologies")
+                )
+            elif normalized.get("target_ontology") is not None:
+                normalized["target_ontologies"] = normalize_target_ontologies(
+                    normalized.get("target_ontology")
+                )
+        except TypeError as exc:
+            raise ValueError(str(exc)) from exc
+        return normalized
 
 
 class SessionRecord(BaseModel):

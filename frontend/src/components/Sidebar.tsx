@@ -77,13 +77,12 @@ export default function Sidebar() {
             {to === '/settings' && (
               <div className="sidebar-status-panel">
                 <p className="sidebar-status-title">Pipeline</p>
-                {(
-                  [
-                    { label: 'Layer 1 — NER', key: 'layer1' as const },
-                    { label: 'Layer 2 — Retrieval', key: 'layer2' as const },
-                    { label: 'Layer 3 — LLM', key: 'layer3' as const },
-                  ] as const
-                ).map(({ label: rowLabel, key }) => {
+	                {(
+	                  [
+	                    { label: 'Candidate Retrieval', key: 'layer2' as const },
+	                    { label: 'AI Model', key: 'layer3' as const },
+	                  ] as const
+	                ).map(({ label: rowLabel, key }) => {
                   const state = layerStatus?.[key] ?? 'warning';
                   return (
                     <div key={key} className="sidebar-status-row">

@@ -9,6 +9,7 @@ from app.models.mapping import (
     SingleMappingResponse,
 )
 from app.storage.config_store import get_sensitive, load_config
+from app.utils.ontology import normalize_target_ontologies
 
 # ── Batch job store ──────────────────────────────────────────────────────────
 _batch_jobs: dict[str, dict] = {}
@@ -26,14 +27,14 @@ _PLANNED_MAX_ALTERNATIVES = 5
 # Fix 2: frontend option values (lowercase, "/" → "_") → library entity_type
 _CLINICAL_AREA_MAP: dict[str, str | None] = {
     "phenotype_symptom": "phenotype",
-    "disease_condition":  "disease",
-    "lab_measurement":    "measurement",
-    "medication":         "medication",
-    "demographic":        "demographic",
-    "other":              "other",
+    "disease_condition": "disease",
+    "lab_measurement": "measurement",
+    "medication": "medication",
+    "demographic": "demographic",
+    "other": "other",
     # pass-through for callers that already use library values
-    "phenotype":   "phenotype",
-    "disease":     "disease",
+    "phenotype": "phenotype",
+    "disease": "disease",
     "measurement": "measurement",
 }
 
@@ -54,6 +55,7 @@ def _provider_extra_kwargs(config) -> dict:
     kwargs: dict = {}
     if config.provider in _OLLAMA_PROVIDERS:
         from urllib.parse import urlparse
+
         raw = (config.base_url or "").rstrip("/")
         host = urlparse(raw).hostname or "" if raw else ""
         kwargs["base_url"] = (
@@ -65,13 +67,17 @@ def _provider_extra_kwargs(config) -> dict:
 
 
 _ONTOLOGY_COMPARE_NORMALIZE: dict[str, str] = {
-    "HP": "HPO",      "HPO": "HPO",
+    "HP": "HPO",
+    "HPO": "HPO",
     "MONDO": "MONDO",
     "NCIT": "NCIT",
     "LOINC": "LOINC",
-    "ICD10": "ICD10", "ICD10CM": "ICD10",
+    "ICD10": "ICD10",
+    "ICD10CM": "ICD10",
     "CHEBI": "CHEBI",
-    "SNOMED": "SNOMED", "SNOMEDCT": "SNOMED", "SNOMED-CT": "SNOMED",
+    "SNOMED": "SNOMED",
+    "SNOMEDCT": "SNOMED",
+    "SNOMED-CT": "SNOMED",
     "RXNORM": "RXNORM",
 }
 
@@ -89,13 +95,17 @@ def _infer_ontology_from_code(code: str) -> str:
         return code
     prefix = code.split(":", 1)[0].upper()
     return {
-        "HP": "HPO",   "HPO": "HPO",
+        "HP": "HPO",
+        "HPO": "HPO",
         "MONDO": "MONDO",
         "NCIT": "NCIT",
         "LOINC": "LOINC",
-        "ICD10": "ICD10",  "ICD10CM": "ICD10",
-        "RXNORM": "RxNorm", "RXCUI": "RxNorm",
-        "SNOMEDCT": "SNOMED-CT", "SNOMED": "SNOMED-CT",
+        "ICD10": "ICD10",
+        "ICD10CM": "ICD10",
+        "RXNORM": "RxNorm",
+        "RXCUI": "RxNorm",
+        "SNOMEDCT": "SNOMED-CT",
+        "SNOMED": "SNOMED-CT",
         "CHEBI": "CHEBI",
         "UO": "UO",
     }.get(prefix, prefix)
@@ -123,15 +133,17 @@ def _validate_config() -> None:
 def _planned_limit_kwargs(config) -> dict:
     """PlannedPipeline consumes these through OntologyMapper.map_term()."""
     return {
-        "rag_top_k":        getattr(config, "rag_top_k", _PLANNED_RAG_TOP_K),
-        "max_candidates":   getattr(config, "max_candidates", _PLANNED_MAX_CANDIDATES),
-        "max_alternatives": getattr(config, "max_alternatives", _PLANNED_MAX_ALTERNATIVES),
+        "rag_top_k": getattr(config, "rag_top_k", _PLANNED_RAG_TOP_K),
+        "max_candidates": getattr(config, "max_candidates", _PLANNED_MAX_CANDIDATES),
+        "max_alternatives": getattr(
+            config, "max_alternatives", _PLANNED_MAX_ALTERNATIVES
+        ),
     }
 
 
 def _build_llm_provider(config):
     """Build the LLM provider explicitly so local planned mode can share it."""
-    from llm_ontology_mapper import LLMProviderFactory
+    from llm_ontology_mapper import LLMProviderFactory  # type: ignore[import-untyped]
 
     return LLMProviderFactory.from_config(
         provider=_normalise_provider(config.provider),
@@ -144,14 +156,17 @@ def _build_llm_provider(config):
 def _build_mapper_kwargs(config, *, ontologies: list[str] | None = None) -> dict:
     """Build OntologyMapper constructor kwargs for the planned pipeline."""
     kwargs: dict = {
-        "ontologies":            ontologies,
-        "use_planned_pipeline":  True,
-        "retrieval_mode":        config.retrieval_mode,
+        "ontologies": ontologies,
+        "use_planned_pipeline": True,
+        "retrieval_mode": config.retrieval_mode,
         **_planned_limit_kwargs(config),
     }
 
     if config.retrieval_mode == "local":
-        from llm_ontology_mapper import LocalSemanticRetriever, PlannedPipeline
+        from llm_ontology_mapper import (  # type: ignore[import-untyped]
+            LocalSemanticRetriever,
+            PlannedPipeline,
+        )
 
         llm_provider = _build_llm_provider(config)
         kwargs["llm_provider"] = llm_provider
@@ -163,12 +178,14 @@ def _build_mapper_kwargs(config, *, ontologies: list[str] | None = None) -> dict
         )
         return kwargs
 
-    kwargs.update({
-        "provider": _normalise_provider(config.provider),
-        "model":    config.model,
-        "api_key":  get_sensitive("api_key"),
-        **_provider_extra_kwargs(config),
-    })
+    kwargs.update(
+        {
+            "provider": _normalise_provider(config.provider),
+            "model": config.model,
+            "api_key": get_sensitive("api_key"),
+            **_provider_extra_kwargs(config),
+        }
+    )
     return kwargs
 
 
@@ -183,7 +200,7 @@ def _bridge_mapping_values(result) -> tuple[str, str, str]:
 
 
 def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
-    from llm_ontology_mapper import OntologyMapper
+    from llm_ontology_mapper import OntologyMapper  # type: ignore[import-untyped]
 
     _validate_config()
     config = load_config()
@@ -211,12 +228,7 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
             f"'{config.provider}' → '{normalised_provider}'"
         )
 
-    # Per-request ontology filter (None = auto-detect via entity_type)
-    ontologies: list[str] | None = None
-    if request.target_ontologies and request.target_ontologies.lower() != "auto":
-        ontologies = [request.target_ontologies.upper()]
-
-    mapper_kwargs = _build_mapper_kwargs(config, ontologies=ontologies)
+    mapper_kwargs = _build_mapper_kwargs(config, ontologies=request.target_ontologies)
     if "base_url" in mapper_kwargs:
         print(
             f"[mapper_service] base_url: config={config.base_url!r} "
@@ -225,10 +237,10 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
 
     mapper = OntologyMapper(**mapper_kwargs)
     result = mapper.map_term(
-        source_term=effective_term,        # Fix 1: label-first query
+        source_term=effective_term,  # Fix 1: label-first query
         source_label=request.source_label,
         source_type=request.source_type,
-        entity_type=mapped_entity_type,    # Fix 2: normalised entity type
+        entity_type=mapped_entity_type,  # Fix 2: normalised entity type
     )
 
     alternatives = [
@@ -242,56 +254,6 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
         )
         for a in result.alternatives
     ]
-
-    # ── Layer 2: ontology filter / promote / fallback ────────────────────────
-    # When a specific ontology is selected, every returned item must belong to
-    # that ontology. Auto-detect (ontologies is None) skips this block entirely.
-    if ontologies is not None:
-        selected = _normalize_for_comparison(ontologies[0])
-
-        def _ont_of_result() -> str:
-            return _normalize_for_comparison(result.ontology) or \
-                   _normalize_for_comparison(_infer_ontology_from_code(result.target_code))
-
-        def _ont_of_alt(alt: AlternativeResult) -> str:
-            return _normalize_for_comparison(alt.ontology) or \
-                   _normalize_for_comparison(_infer_ontology_from_code(alt.code))
-
-        filtered_alts = [a for a in alternatives if _ont_of_alt(a) == selected]
-
-        if _ont_of_result() == selected:
-            alternatives = filtered_alts
-        elif filtered_alts:
-            # Promote the highest-confidence matching alternative to best match.
-            best_alt = filtered_alts[0]
-            from llm_ontology_mapper.models import LogicType as _LogicType
-            result = result.model_copy(update={
-                "target_code":  best_alt.code,
-                "target_term":  best_alt.term,
-                "ontology":     best_alt.ontology,
-                "confidence":   best_alt.confidence,
-                "logic_type":   _LogicType(best_alt.source) if best_alt.source in ("llm", "rag", "direct") else _LogicType.LLM,
-            })
-            alternatives = filtered_alts[1:]
-            print(f"[mapper_service] ontology filter: promoted {best_alt.code} from alternatives")
-        else:
-            print(f"[mapper_service] ontology filter: no match for '{selected}' — returning UNMAPPED")
-            return SingleMappingResponse(
-                source_term=request.source_term,
-                source_label=request.source_label,
-                source_type=request.source_type,
-                target_code="UNMAPPED",
-                target_term="NO_MATCH_IN_SELECTED_ONTOLOGY",
-                ontology=ontologies[0],
-                confidence=0.0,
-                logic_type="llm",
-                notes=f"No match found in {ontologies[0]}. Try Auto-detect or a different ontology.",
-                alternatives=[],
-                metadata=None,
-                configured_provider=config.provider,
-                configured_model=config.model,
-                retrieval_mode=config.retrieval_mode,
-            )
 
     metadata: MappingMetadata | None = None
     if result.metadata:
@@ -311,7 +273,7 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
     target_code, target_term, ontology = _bridge_mapping_values(result)
 
     return SingleMappingResponse(
-        source_term=request.source_term,   # always the original variable name
+        source_term=request.source_term,  # always the original variable name
         source_label=request.source_label,
         source_type=request.source_type,
         target_code=target_code,
@@ -330,32 +292,40 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
 
 # ── Batch job functions ──────────────────────────────────────────────────────
 
+
 def start_batch_job(
     records: list[dict[str, Any]],
     column_map: dict,
     clinical_area: str | None,
+    target_ontologies: list[str] | None,
     auto_accept_threshold: float,
 ) -> str:
     import threading
+
     job_id = str(uuid.uuid4())
+    normalized_target_ontologies = normalize_target_ontologies(target_ontologies)
     _batch_jobs[job_id] = {
         "status": "running",
         "total": len(records),
         "completed": 0,
         "results": [],
+        "target_ontologies": normalized_target_ontologies,
         "cancel": False,
     }
 
     def run():
+        from llm_ontology_mapper import OntologyMapper  # type: ignore[import-untyped]
+
         from app.models.mapping import BatchRowResult
-        from llm_ontology_mapper import OntologyMapper
 
         # Initialise once for the entire batch — not once per term.
         try:
             _validate_config()
             config = load_config()
             mapped_entity_type = _map_entity_type(clinical_area)
-            mapper = OntologyMapper(**_build_mapper_kwargs(config))
+            mapper = OntologyMapper(
+                **_build_mapper_kwargs(config, ontologies=normalized_target_ontologies)
+            )
         except Exception as exc:
             logger.error("Batch job %s failed during initialisation: %s", job_id, exc)
             _batch_jobs[job_id]["status"] = "failed"
@@ -367,20 +337,20 @@ def start_batch_job(
                 job["status"] = "cancelled"
                 return
             field_name_col = column_map.get("field_name") or "field_name"
-            label_col      = column_map.get("label")
-            desc_col       = column_map.get("description")
-            dtype_col      = column_map.get("data_type")
+            label_col = column_map.get("label")
+            desc_col = column_map.get("description")
+            dtype_col = column_map.get("data_type")
 
-            field_name  = rec.get(field_name_col, f"row_{i}")
-            label       = rec.get(label_col) if label_col else None
+            field_name = rec.get(field_name_col, f"row_{i}")
+            label = rec.get(label_col) if label_col else None
             description = rec.get(desc_col) if desc_col else None
             source_type = rec.get(dtype_col) if dtype_col else None
 
             effective_label = label or description
-            effective_term  = effective_label or field_name
+            effective_term = effective_label or field_name
 
             print(
-                f"[Batch] Mapping term {i + 1}/{len(records)}: \"{effective_term}\" | "
+                f'[Batch] Mapping term {i + 1}/{len(records)}: "{effective_term}" | '
                 f"model: {_normalise_provider(config.provider)} / {config.model} | "
                 f"retrieval_mode: {config.retrieval_mode}"
             )
@@ -394,7 +364,9 @@ def start_batch_job(
                 )
                 target_code, target_term, ontology = _bridge_mapping_values(result)
                 confidence_pct = result.confidence
-                decision = "accepted" if confidence_pct >= auto_accept_threshold else "pending"
+                decision = (
+                    "accepted" if confidence_pct >= auto_accept_threshold else "pending"
+                )
                 if target_code == "UNMAPPED":
                     decision = "rejected"
 

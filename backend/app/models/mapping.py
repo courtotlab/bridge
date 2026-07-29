@@ -2,13 +2,15 @@ from datetime import datetime
 
 from pydantic import BaseModel, field_validator
 
+from app.utils.ontology import normalize_target_ontologies
+
 
 class SingleMappingRequest(BaseModel):
     source_term: str
     source_label: str | None = None
-    source_type: str | None = None       # data type: numeric, text, boolean, etc.
-    entity_type: str | None = None       # clinical area: phenotype, disease, etc.
-    target_ontologies: str | None = None # None = auto-detect
+    source_type: str | None = None  # data type: numeric, text, boolean, etc.
+    entity_type: str | None = None  # clinical area: phenotype, disease, etc.
+    target_ontologies: list[str] | None = None  # None = automatic routing
 
     @field_validator("source_term")
     @classmethod
@@ -16,6 +18,14 @@ class SingleMappingRequest(BaseModel):
         if not v.strip():
             raise ValueError("source_term must not be empty")
         return v
+
+    @field_validator("target_ontologies", mode="before")
+    @classmethod
+    def normalize_target_ontologies_field(cls, v):
+        try:
+            return normalize_target_ontologies(v)
+        except TypeError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class AlternativeResult(BaseModel):
@@ -56,7 +66,16 @@ class SingleMappingResponse(BaseModel):
 class BatchMappingRequest(BaseModel):
     column_map: dict  # keys: field_name, label, description, data_type (values are CSV column names or None)
     clinical_area: str | None = None
+    target_ontologies: list[str] | None = None
     auto_accept_threshold: float = 0.85
+
+    @field_validator("target_ontologies", mode="before")
+    @classmethod
+    def normalize_target_ontologies_field(cls, v):
+        try:
+            return normalize_target_ontologies(v)
+        except TypeError as exc:
+            raise ValueError(str(exc)) from exc
 
 
 class BatchRowResult(BaseModel):
@@ -68,7 +87,7 @@ class BatchRowResult(BaseModel):
     ontology: str
     confidence: float
     logic_type: str
-    decision: str = "pending"   # "accepted" | "rejected" | "pending"
+    decision: str = "pending"  # "accepted" | "rejected" | "pending"
     alternatives: list[AlternativeResult] = []
     configured_provider: str | None = None
     configured_model: str | None = None
@@ -80,4 +99,4 @@ class BatchMappingResponse(BaseModel):
     total: int
     completed: int
     results: list[BatchRowResult]
-    status: str   # "running" | "done" | "cancelled"
+    status: str  # "running" | "done" | "cancelled"

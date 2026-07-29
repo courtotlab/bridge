@@ -150,7 +150,9 @@ async def validate_codes(codes: list[str]) -> list[ValidateResult]:
             if kind == "loinc":
                 if loinc_user and loinc_pass:
                     tasks.append(
-                        _lookup_loinc(raw, normalised, sem, http, loinc_user, loinc_pass)
+                        _lookup_loinc(
+                            raw, normalised, sem, http, loinc_user, loinc_pass
+                        )
                     )
                 else:
                     tasks.append(_lookup_unknown(raw))

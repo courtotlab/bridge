@@ -40,6 +40,14 @@ function inputSummaryLabel(type: SessionType, summary: InputSummary): string {
   return summary.filename ?? '—';
 }
 
+export function formatOntologySummary(summary: InputSummary): string {
+  if (summary.target_ontologies && summary.target_ontologies.length > 0) {
+    return summary.target_ontologies.join(', ');
+  }
+  if (summary.target_ontology) return summary.target_ontology;
+  return 'Automatic';
+}
+
 function inputSummaryMetaRows(summary: InputSummary): Array<[string, string]> {
   const rows: Array<[string, string]> = [];
   if (summary.filename)               rows.push(['File', summary.filename]);
@@ -47,7 +55,7 @@ function inputSummaryMetaRows(summary: InputSummary): Array<[string, string]> {
   if (summary.term)                   rows.push(['Term', summary.term]);
   if (summary.codes && summary.codes.length > 0) rows.push(['Codes', `${summary.codes.length} codes`]);
   if (summary.clinical_area)          rows.push(['Area', summary.clinical_area]);
-  if (summary.target_ontology)        rows.push(['Ontology', summary.target_ontology]);
+  if (summary.term || summary.filename) rows.push(['Ontologies', formatOntologySummary(summary)]);
   if (summary.auto_accept_threshold != null) {
     rows.push(['Auto-accept', `${Math.round(summary.auto_accept_threshold * 100)}%`]);
   }

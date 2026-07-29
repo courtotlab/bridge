@@ -60,7 +60,9 @@ async def append_event_endpoint(session_id: str, body: AppendEventRequest) -> No
 
 
 @router.patch("/{session_id}/complete", status_code=204)
-async def complete_session_endpoint(session_id: str, body: CompleteSessionRequest) -> None:
+async def complete_session_endpoint(
+    session_id: str, body: CompleteSessionRequest
+) -> None:
     try:
         complete_session(session_id, body.status, body.result_snapshot)
         logger.info("[history] completed session %s status=%s", session_id, body.status)

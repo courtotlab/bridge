@@ -19,6 +19,7 @@ _LayerState = Literal["ok", "warning", "disabled", "error"]
 def _check_scispacy() -> bool:
     try:
         import spacy  # noqa: F401
+
         return True
     except ImportError:
         return False

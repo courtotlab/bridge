@@ -248,23 +248,6 @@ body {
   font-size: 12px;
 }
 
-/* ── Checkbox row ───────────────────────────────────────────────────── */
-.checkbox-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: #111827;
-  cursor: pointer;
-}
-
-.checkbox-row input[type='checkbox'] {
-  width: 15px;
-  height: 15px;
-  cursor: pointer;
-  accent-color: #1d4ed8;
-}
-
 /* ── Radio group ────────────────────────────────────────────────────── */
 .radio-group {
   display: flex;
@@ -342,6 +325,64 @@ body {
 
 .form-input-sm {
   width: 80px;
+}
+
+/* ── Ontology multi-select ──────────────────────────────────────────── */
+.ontology-multi-select {
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.ontology-option-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  gap: 8px;
+}
+
+.ontology-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #374151;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.ontology-option:hover {
+  border-color: #93c5fd;
+  background: #f8fafc;
+}
+
+.ontology-option:has(input:focus-visible) {
+  border-color: #1d4ed8;
+  box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.12);
+}
+
+.ontology-option--selected {
+  border-color: #1d4ed8;
+  background: #eff6ff;
+  color: #1e40af;
+}
+
+.ontology-option input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #1d4ed8;
+  cursor: pointer;
+}
+
+.ontology-multi-select:disabled .ontology-option {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .input-row {

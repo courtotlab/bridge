@@ -1,5 +1,6 @@
 import client from './client';
-import type { BatchUploadPreview, BatchJobStatus } from '../types/mapping';
+import type { BatchJobStatus, BatchUploadPreview } from '../types/mapping';
+import { appendTargetOntologiesJson } from '../utils/ontologyPayloads';
 
 export async function uploadPreview(file: File): Promise<BatchUploadPreview> {
   const form = new FormData();
@@ -14,6 +15,7 @@ export async function startBatch(params: {
   file: File;
   columnMap: Record<string, string | null>;
   clinicalArea: string | null;
+  targetOntologies?: string[];
   useRag: boolean;
   autoAcceptThreshold: number;
 }): Promise<{ job_id: string; total: number }> {
@@ -21,6 +23,7 @@ export async function startBatch(params: {
   form.append('file', params.file);
   form.append('column_map_json', JSON.stringify(params.columnMap));
   if (params.clinicalArea) form.append('clinical_area', params.clinicalArea);
+  appendTargetOntologiesJson(form, params.targetOntologies);
   form.append('use_rag', String(params.useRag));
   form.append('auto_accept_threshold', String(params.autoAcceptThreshold));
   const { data } = await client.post('/batch/start', form, {

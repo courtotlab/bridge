@@ -7,7 +7,8 @@ export interface InputSummary {
   term?: string;
   codes?: string[];
   clinical_area?: string;
-  target_ontology?: string;
+  target_ontologies?: string[] | null;
+  target_ontology?: string | null;
   auto_accept_threshold?: number;
 }
 

@@ -45,7 +45,9 @@ async def _import_error(request: Request, exc: ImportError) -> JSONResponse:
 
 
 @app.exception_handler(requests.exceptions.ConnectionError)
-async def _connection_error(request: Request, exc: requests.exceptions.ConnectionError) -> JSONResponse:
+async def _connection_error(
+    request: Request, exc: requests.exceptions.ConnectionError
+) -> JSONResponse:
     return JSONResponse(status_code=503, content={"detail": str(exc)})
 
 

@@ -3,21 +3,16 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getConfig } from '../api/configApi';
 import { mapSingleTerm } from '../api/mappingApi';
+import OntologyMultiSelect from '../components/OntologyMultiSelect';
+import {
+  getOntologyDisplayName,
+  ONTOLOGY_OPTIONS,
+} from '../constants/ontologies';
 import { useSession } from '../context/SessionContext';
 import type { AlternativeResult, SingleMappingResponse } from '../types/mapping';
+import { targetOntologiesOrNull } from '../utils/ontologyPayloads';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-
-const ONTOLOGY_FULL_NAMES: Record<string, string> = {
-  HPO: 'Human Phenotype Ontology',
-  MONDO: 'Monarch Disease Ontology',
-  NCIT: 'NCI Thesaurus',
-  LOINC: 'Logical Observation Identifiers Names and Codes',
-  ICD10: 'International Classification of Diseases, 10th Revision',
-  CHEBI: 'Chemical Entities of Biological Interest',
-  SNOMED: 'SNOMED Clinical Terms',
-  RXNORM: 'RxNorm',
-};
 
 const RETRIEVAL_MODE_TOOLTIPS: Record<string, string> = {
   public: 'Uses the public ontology API for candidate retrieval',
@@ -36,22 +31,10 @@ const CLINICAL_AREA_OPTIONS = [
   'Other',
 ];
 
-const ONTOLOGY_OPTIONS = [
-  'Auto-detect',
-  'HPO',
-  'MONDO',
-  'NCIT',
-  'LOINC',
-  'ICD10',
-  'CHEBI',
-  'SNOMED',
-  'RxNorm',
-];
-
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 function getOntologyName(code: string): string {
-  return ONTOLOGY_FULL_NAMES[code.toUpperCase()] ?? code;
+  return getOntologyDisplayName(code);
 }
 
 type ConfidenceTier = 'high' | 'med' | 'low';
@@ -162,7 +145,7 @@ export default function SearchPage() {
   const [description, setDescription] = useState('');
   const [dataType, setDataType] = useState('');
   const [clinicalArea, setClinicalArea] = useState('');
-  const [targetOntology, setTargetOntology] = useState('Auto-detect');
+  const [targetOntologies, setTargetOntologies] = useState<string[]>([]);
   const [termError, setTermError] = useState('');
 
   // Request state
@@ -205,21 +188,24 @@ export default function SearchPage() {
     setAltList([]);
     setLoading(true);
 
-    const onto =
-      targetOntology === 'Auto-detect' ? undefined : targetOntology.toUpperCase();
+    const selectedOntologies = targetOntologiesOrNull(targetOntologies);
 
     try {
       const sid = await startSession('term_search', {
         term: sourceTerm.trim(),
         clinical_area: clinicalArea || undefined,
-        target_ontology: onto,
+        target_ontologies: selectedOntologies,
       });
       sessionIdRef.current = sid;
       emitEvent(sid, {
         timestamp: new Date().toISOString(),
         actor: 'user',
         event_type: 'session_started',
-        payload: { term: sourceTerm.trim(), clinical_area: clinicalArea || null, target_ontology: onto ?? null },
+        payload: {
+          term: sourceTerm.trim(),
+          clinical_area: clinicalArea || null,
+          target_ontologies: selectedOntologies,
+        },
       }).catch(console.error);
     } catch {
       sessionIdRef.current = null;
@@ -230,7 +216,7 @@ export default function SearchPage() {
       source_label: sourceLabel.trim() || undefined,
       source_type: dataType || undefined,
       entity_type: clinicalArea || undefined,
-      target_ontologies: onto,
+      target_ontologies: selectedOntologies,
     })
       .then((res) => {
         // Sort alternatives by confidence descending
@@ -464,26 +450,14 @@ export default function SearchPage() {
 
           {/* Target ontologies */}
           <div className="field-group">
-            <label className="field-label" htmlFor="target-ontology">
-              Target ontologies{' '}
-              <span className="optional-mark">(optional)</span>
-            </label>
-            <select
-              id="target-ontology"
-              className="form-select"
-              value={targetOntology}
-              onChange={(e) => setTargetOntology(e.target.value)}
+            <OntologyMultiSelect
+              label="Target ontologies"
+              options={ONTOLOGY_OPTIONS}
+              selectedValues={targetOntologies}
+              onChange={setTargetOntologies}
               disabled={formDisabled}
-            >
-              {ONTOLOGY_OPTIONS.map((o) => (
-                <option key={o} value={o}>
-                  {o}
-                </option>
-              ))}
-            </select>
-            <p className="field-helper">
-              Auto-detect chooses HPO, MONDO, NCIT, LOINC based on the clinical area.
-            </p>
+              helperText="Selected ontologies restrict the mapping results. Leave all unselected for automatic selection."
+            />
           </div>
 
           {/* Submit */}

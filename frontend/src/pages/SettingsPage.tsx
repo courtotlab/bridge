@@ -394,28 +394,8 @@ export default function SettingsPage() {
       <h1 className="page-title">Settings — Pipeline Configuration</h1>
       <p className="page-subtitle">Configure Pipeline Settings</p>
 
-      {/* ── Layer 1 ─────────────────────────────────────────── */}
-      <AccordionSection title="Layer 1 — Input: Smart Term Extraction">
-        <div className="field-group">
-          <label className="checkbox-row">
-            <input
-              type="checkbox"
-              checked={config.use_ner}
-              onChange={(e) => patch({ use_ner: e.target.checked })}
-            />
-            <span>Use biomedical term detection</span>
-          </label>
-          <p className="field-helper">
-            <span className="info-icon">ℹ️</span>{' '}
-            Before mapping, the tool identifies the key medical concept in your field name
-            (e.g. extracts &apos;hypertension&apos; from &apos;htn_diag_age&apos;). Improves accuracy for
-            abbreviated names. Requires scispaCy models — disable if not installed.
-          </p>
-        </div>
-      </AccordionSection>
-
       {/* ── Layer 2 ─────────────────────────────────────────── */}
-      <AccordionSection title="Layer 2 — Candidate Retrieval: Finding Ontology Matches">
+      <AccordionSection title="Candidate Retrieval: Finding Ontology Matches">
         <p className="section-question">
           How should the tool find candidate codes before asking the AI?
         </p>
@@ -456,27 +436,6 @@ export default function SettingsPage() {
             </label>
           ))}
         </div>
-
-        {config.retrieval_mode === 'public' && (
-          <div className="subsection">
-            <p className="subsection-title">Public databases options</p>
-            <div className="field-group">
-              <label className="field-label">BioPortal API key</label>
-              <input
-                type="password"
-                className="form-input"
-                placeholder="optional — leave blank to skip"
-                value={config.bioportal_api_key ?? ''}
-                onChange={(e) => patch({ bioportal_api_key: e.target.value || null })}
-              />
-              <p className="field-helper">
-                <span className="info-icon">ℹ️</span>{' '}
-                Adds BioPortal as a fallback source. Get a free key at bioportal.bioontology.org
-                → Account → API key.
-              </p>
-            </div>
-          </div>
-        )}
 
         {config.retrieval_mode === 'local' && (
           <div className="subsection">
@@ -523,7 +482,7 @@ export default function SettingsPage() {
       </AccordionSection>
 
       {/* ── Layer 3 ─────────────────────────────────────────── */}
-      <AccordionSection title="Layer 3 — AI Model: Final Code Selection">
+      <AccordionSection title="AI Model: Final Code Selection">
         <p className="section-question">Which AI would you like to use?</p>
 
         <div className="radio-group">

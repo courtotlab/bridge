@@ -3,7 +3,7 @@ export interface SingleMappingRequest {
   source_label?: string;
   source_type?: string;       // data type: numeric, text, boolean, etc.
   entity_type?: string;       // clinical area: phenotype, disease, etc.
-  target_ontologies?: string; // undefined = auto-detect
+  target_ontologies?: string[] | null; // null/undefined = automatic routing
 }
 
 export interface AlternativeResult {

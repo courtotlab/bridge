@@ -1,32 +1,57 @@
-import io
 import csv
+import io
 import json
 import logging
+
+import pandas as pd  # type: ignore[import-untyped]
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
-import pandas as pd
 
 from app.models.mapping import BatchMappingResponse
 from app.services.mapper_service import (
-    cancel_batch_job, get_batch_job, start_batch_job, update_batch_decision,
+    cancel_batch_job,
+    get_batch_job,
+    start_batch_job,
+    update_batch_decision,
 )
+from app.utils.ontology import normalize_target_ontologies
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+_TARGET_ONTOLOGIES_ERROR = "target_ontologies_json must be a JSON array of strings"
+
+
+def _parse_target_ontologies_json(raw: str | None) -> list[str] | None:
+    if raw is None or not raw.strip():
+        return None
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=_TARGET_ONTOLOGIES_ERROR) from exc
+
+    if not isinstance(parsed, list):
+        raise HTTPException(status_code=400, detail=_TARGET_ONTOLOGIES_ERROR)
+
+    try:
+        return normalize_target_ontologies(parsed)
+    except TypeError as exc:
+        raise HTTPException(status_code=400, detail=_TARGET_ONTOLOGIES_ERROR) from exc
 
 
 @router.post("/upload-preview")
 async def upload_preview(file: UploadFile = File(...)):
     contents = await file.read()
+    filename = file.filename or ""
     try:
-        if file.filename.endswith(".xlsx"):
+        if filename.endswith(".xlsx"):
             df = pd.read_excel(io.BytesIO(contents))
         else:
             df = pd.read_csv(io.BytesIO(contents))
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Could not parse file: {exc}")
     return {
-        "filename": file.filename,
+        "filename": filename,
         "row_count": len(df),
         "columns": list(df.columns),
         "preview": df.head(3).fillna("").to_dict(orient="records"),
@@ -37,15 +62,18 @@ async def upload_preview(file: UploadFile = File(...)):
 async def start_batch(
     file: UploadFile = File(...),
     column_map_json: str = Form(...),
-    clinical_area: str = Form(None),
+    clinical_area: str | None = Form(None),
+    target_ontologies_json: str | None = Form(None),
     # Deprecated compatibility field: planned retrieval is controlled by Settings.retrieval_mode.
     deprecated_use_rag: bool = Form(True, alias="use_rag"),
     auto_accept_threshold: float = Form(0.85),
 ):
     column_map = json.loads(column_map_json)
+    target_ontologies = _parse_target_ontologies_json(target_ontologies_json)
     contents = await file.read()
+    filename = file.filename or ""
     try:
-        if file.filename.endswith(".xlsx"):
+        if filename.endswith(".xlsx"):
             df = pd.read_excel(io.BytesIO(contents))
         else:
             df = pd.read_csv(io.BytesIO(contents))
@@ -57,6 +85,7 @@ async def start_batch(
         records=records,
         column_map=column_map,
         clinical_area=clinical_area,
+        target_ontologies=target_ontologies,
         auto_accept_threshold=auto_accept_threshold,
     )
     return {"job_id": job_id, "total": len(records)}
@@ -87,7 +116,9 @@ def cancel_job(job_id: str):
 def set_decision(job_id: str, row_index: int, body: dict):
     decision = body.get("decision")
     if decision not in ("accepted", "rejected", "pending"):
-        raise HTTPException(status_code=422, detail="decision must be accepted|rejected|pending")
+        raise HTTPException(
+            status_code=422, detail="decision must be accepted|rejected|pending"
+        )
     if not update_batch_decision(job_id, row_index, decision):
         raise HTTPException(status_code=404, detail="Row not found")
     return {"updated": True}
@@ -113,7 +144,19 @@ def export_results(job_id: str):
     ]
 
     buf = io.StringIO()
-    fieldnames = list(rows[0].keys()) if rows else ["field_name", "label", "suggested_code", "suggested_term", "ontology", "confidence", "decision"]
+    fieldnames = (
+        list(rows[0].keys())
+        if rows
+        else [
+            "field_name",
+            "label",
+            "suggested_code",
+            "suggested_term",
+            "ontology",
+            "confidence",
+            "decision",
+        ]
+    )
     writer = csv.DictWriter(buf, fieldnames=fieldnames)
     writer.writeheader()
     writer.writerows(rows)
@@ -121,5 +164,7 @@ def export_results(job_id: str):
     return StreamingResponse(
         iter([buf.read()]),
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="batch_results_{job_id[:8]}.csv"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="batch_results_{job_id[:8]}.csv"'
+        },
     )

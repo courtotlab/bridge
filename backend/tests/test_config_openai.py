@@ -38,7 +38,9 @@ def _api_status_error(status_code: int, message: str) -> openai.APIStatusError:
 
 
 def test_is_openai_quota_error_detects_429_and_keywords():
-    assert is_openai_quota_error(_api_status_error(429, "You exceeded your current quota"))
+    assert is_openai_quota_error(
+        _api_status_error(429, "You exceeded your current quota")
+    )
     assert is_openai_quota_error(Exception("insufficient_quota for this account"))
     assert not is_openai_quota_error(_api_status_error(500, "internal server error"))
 
@@ -49,7 +51,9 @@ def test_is_openai_model_access_error_detects_404():
 
 
 def test_openai_chat_test_error_response_quota():
-    exc = _api_status_error(429, "You exceeded your current quota, please check billing")
+    exc = _api_status_error(
+        429, "You exceeded your current quota, please check billing"
+    )
     result = openai_chat_error_response(exc, ["gpt-4o"])
     assert result.success is False
     assert result.api_key_ok is True
@@ -71,7 +75,9 @@ def test_test_openai_invalid_api_key(mock_openai_cls: MagicMock):
     mock_openai_cls.return_value = client
     client.models.list.side_effect = openai.AuthenticationError(
         "Invalid API key",
-        response=httpx.Response(401, request=httpx.Request("GET", "https://api.openai.com/v1/models")),
+        response=httpx.Response(
+            401, request=httpx.Request("GET", "https://api.openai.com/v1/models")
+        ),
         body=None,
     )
 

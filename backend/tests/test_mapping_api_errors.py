@@ -26,7 +26,9 @@ from app.models.mapping import SingleMappingRequest
         (MappingResultBuilderError("builder failed"), 500),
     ],
 )
-def test_planned_pipeline_exceptions_map_to_http_status(monkeypatch, exc, expected_status):
+def test_planned_pipeline_exceptions_map_to_http_status(
+    monkeypatch, exc, expected_status
+):
     monkeypatch.setattr(
         mapping_api,
         "map_single_term",

@@ -46,7 +46,11 @@ def set_connection_result(
     api_key_ok: bool | None = None,
     model_ok: bool | None = None,
 ) -> None:
-    global _connection_tested, _connection_test_passed, _connection_api_key_ok, _connection_model_ok
+    global \
+        _connection_tested, \
+        _connection_test_passed, \
+        _connection_api_key_ok, \
+        _connection_model_ok
     _connection_tested = True
     _connection_test_passed = success
     _connection_api_key_ok = api_key_ok
@@ -54,7 +58,11 @@ def set_connection_result(
 
 
 def invalidate_connection_test() -> None:
-    global _connection_tested, _connection_test_passed, _connection_api_key_ok, _connection_model_ok
+    global \
+        _connection_tested, \
+        _connection_test_passed, \
+        _connection_api_key_ok, \
+        _connection_model_ok
     _connection_tested = False
     _connection_test_passed = False
     _connection_api_key_ok = None

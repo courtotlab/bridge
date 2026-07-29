@@ -3,7 +3,12 @@ import time
 import requests as _requests
 from fastapi import APIRouter, HTTPException
 
-from app.models.config import AppConfig, ConfigStatusResponse, ConnectionTestResponse, ModelsListResponse
+from app.models.config import (
+    AppConfig,
+    ConfigStatusResponse,
+    ConnectionTestResponse,
+    ModelsListResponse,
+)
 from app.storage.config_store import (
     cache_api_key,
     get_sensitive,
@@ -33,6 +38,7 @@ router = APIRouter()
 
 # ── Config CRUD ───────────────────────────────────────────────────────────────
 
+
 @router.get("", response_model=AppConfig)
 def get_config() -> AppConfig:
     return load_config()
@@ -47,6 +53,7 @@ def post_config(config: AppConfig) -> AppConfig:
 
 
 # ── Layer status ──────────────────────────────────────────────────────────────
+
 
 @router.get("/status", response_model=ConfigStatusResponse)
 def get_status() -> ConfigStatusResponse:
@@ -66,12 +73,16 @@ _MODELS_FETCH_WARNING = (
     "Could not fetch live model list — showing defaults. "
     "Check your API key if this is unexpected."
 )
+
+
 @router.get("/openai-models", response_model=ModelsListResponse)
 def get_openai_models() -> ModelsListResponse:
     try:
         import openai as _openai
     except ImportError:
-        return ModelsListResponse(models=_OPENAI_FALLBACK, warning=_MODELS_FETCH_WARNING)
+        return ModelsListResponse(
+            models=_OPENAI_FALLBACK, warning=_MODELS_FETCH_WARNING
+        )
 
     api_key = get_sensitive("api_key")
     if not api_key:
@@ -87,7 +98,9 @@ def get_openai_models() -> ModelsListResponse:
     except _openai.AuthenticationError:
         return ModelsListResponse(models=[], error="Invalid OpenAI API key")
     except Exception:
-        return ModelsListResponse(models=_OPENAI_FALLBACK, warning=_MODELS_FETCH_WARNING)
+        return ModelsListResponse(
+            models=_OPENAI_FALLBACK, warning=_MODELS_FETCH_WARNING
+        )
 
 
 @router.get("/anthropic-models", response_model=ModelsListResponse)
@@ -95,7 +108,9 @@ def get_anthropic_models() -> ModelsListResponse:
     try:
         import anthropic as _anthropic
     except ImportError:
-        return ModelsListResponse(models=_ANTHROPIC_FALLBACK, warning=_MODELS_FETCH_WARNING)
+        return ModelsListResponse(
+            models=_ANTHROPIC_FALLBACK, warning=_MODELS_FETCH_WARNING
+        )
 
     api_key = get_sensitive("api_key")
     if not api_key:
@@ -112,7 +127,9 @@ def get_anthropic_models() -> ModelsListResponse:
     except _anthropic.AuthenticationError:
         return ModelsListResponse(models=[], error="Invalid Anthropic API key")
     except Exception:
-        return ModelsListResponse(models=_ANTHROPIC_FALLBACK, warning=_MODELS_FETCH_WARNING)
+        return ModelsListResponse(
+            models=_ANTHROPIC_FALLBACK, warning=_MODELS_FETCH_WARNING
+        )
 
 
 @router.get("/ollama-models", response_model=list[str])
@@ -125,7 +142,9 @@ def get_ollama_models() -> list[str]:
         data = resp.json()
         return [m["name"] for m in data.get("models", [])]
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=translate(exc, config.base_url)) from exc
+        raise HTTPException(
+            status_code=503, detail=translate(exc, config.base_url)
+        ) from exc
 
 
 @router.get("/ollama-loaded")
@@ -139,10 +158,13 @@ def get_ollama_loaded() -> dict:
         models = resp.json().get("models", [])
         return {"resident_model": models[0]["name"] if models else None}
     except Exception as exc:
-        raise HTTPException(status_code=503, detail="Could not reach Ollama /api/ps") from exc
+        raise HTTPException(
+            status_code=503, detail="Could not reach Ollama /api/ps"
+        ) from exc
 
 
 # ── Connection test ───────────────────────────────────────────────────────────
+
 
 @router.post("/test", response_model=ConnectionTestResponse)
 def test_connection(body: AppConfig | None = None) -> ConnectionTestResponse:
@@ -349,8 +371,7 @@ EMBEDDING_MODELS = [
 def pick_test_model(models: list[dict]) -> str:
     """Pick the smallest chat model from /api/tags model dicts (each has at least 'name' and 'size')."""
     chat_models = [
-        m for m in models
-        if not any(e in m["name"].lower() for e in EMBEDDING_MODELS)
+        m for m in models if not any(e in m["name"].lower() for e in EMBEDDING_MODELS)
     ]
     if not chat_models:
         chat_models = list(models)
@@ -530,6 +551,7 @@ def _ollama_cloud_base(config: AppConfig) -> str:
     raw = config.base_url.rstrip("/")
     try:
         from urllib.parse import urlparse
+
         host = urlparse(raw).hostname or ""
     except Exception:
         host = ""
@@ -696,7 +718,9 @@ def _test_openai(config: AppConfig) -> ConnectionTestResponse:
     try:
         import openai as _openai
     except ImportError:
-        return ConnectionTestResponse(success=False, message="openai package not installed.")
+        return ConnectionTestResponse(
+            success=False, message="openai package not installed."
+        )
 
     api_key = config.api_key
     model = config.model.strip() if config.model else ""
@@ -727,10 +751,16 @@ def _test_openai(config: AppConfig) -> ConnectionTestResponse:
             flush=True,
         )
     except _openai.AuthenticationError as exc:
-        print(f"[config/test] openai models.list ← error_type=invalid_api_key  {type(exc).__name__}", flush=True)
+        print(
+            f"[config/test] openai models.list ← error_type=invalid_api_key  {type(exc).__name__}",
+            flush=True,
+        )
         return invalid_api_key_response("openai")
     except Exception as exc:
-        print(f"[config/test] openai models.list ← error  {type(exc).__name__}", flush=True)
+        print(
+            f"[config/test] openai models.list ← error  {type(exc).__name__}",
+            flush=True,
+        )
         return ConnectionTestResponse(
             success=False,
             message=translate(exc, "OpenAI"),
@@ -791,7 +821,9 @@ def _test_anthropic(config: AppConfig) -> ConnectionTestResponse:
     try:
         import anthropic as _anthropic
     except ImportError:
-        return ConnectionTestResponse(success=False, message="anthropic package not installed.")
+        return ConnectionTestResponse(
+            success=False, message="anthropic package not installed."
+        )
 
     api_key = config.api_key
     model = config.model.strip() if config.model else ""
@@ -822,10 +854,16 @@ def _test_anthropic(config: AppConfig) -> ConnectionTestResponse:
             flush=True,
         )
     except _anthropic.AuthenticationError as exc:
-        print(f"[config/test] anthropic models.list ← error_type=invalid_api_key  {type(exc).__name__}", flush=True)
+        print(
+            f"[config/test] anthropic models.list ← error_type=invalid_api_key  {type(exc).__name__}",
+            flush=True,
+        )
         return invalid_api_key_response("anthropic")
     except Exception as exc:
-        print(f"[config/test] anthropic models.list ← error  {type(exc).__name__}", flush=True)
+        print(
+            f"[config/test] anthropic models.list ← error  {type(exc).__name__}",
+            flush=True,
+        )
         return ConnectionTestResponse(
             success=False,
             message=translate(exc, "Anthropic"),

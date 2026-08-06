@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
@@ -66,6 +67,7 @@ class SingleMappingResponse(BaseModel):
 class BatchMappingRequest(BaseModel):
     column_map: dict  # keys: field_name, label, description, data_type (values are CSV column names or None)
     clinical_area: str | None = None
+    target_ontology_column: str | None = None
     target_ontologies: list[str] | None = None
     auto_accept_threshold: float = 0.85
 
@@ -100,5 +102,5 @@ class BatchMappingResponse(BaseModel):
     total: int
     completed: int
     results: list[BatchRowResult]
-    status: str  # "running" | "done" | "cancelled"
+    status: Literal["running", "done", "interrupted", "failed"]
     error: str | None = None

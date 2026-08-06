@@ -1,3 +1,5 @@
+import type { RetrievalMode } from './config';
+
 export interface SingleMappingRequest {
   source_term: string;
   source_label?: string;
@@ -39,7 +41,7 @@ export interface SingleMappingResponse {
   metadata?: MappingMetadata;
   configured_provider?: string;
   configured_model?: string;
-  retrieval_mode?: string;
+  retrieval_mode?: RetrievalMode | null;
 }
 
 export interface BatchUploadPreview {
@@ -60,9 +62,10 @@ export interface BatchRowResult {
   logic_type: string;
   decision: 'accepted' | 'rejected' | 'pending';
   alternatives: AlternativeResult[];
+  notes?: string;
   configured_provider?: string;
   configured_model?: string;
-  retrieval_mode?: string;
+  retrieval_mode?: RetrievalMode | null;
 }
 
 export interface BatchJobStatus {
@@ -70,5 +73,6 @@ export interface BatchJobStatus {
   total: number;
   completed: number;
   results: BatchRowResult[];
-  status: 'running' | 'done' | 'cancelled';
+  status: 'running' | 'done' | 'interrupted' | 'failed';
+  error?: string | null;
 }

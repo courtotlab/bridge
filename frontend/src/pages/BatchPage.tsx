@@ -1,35 +1,39 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   cancelBatch,
+  cancelBatchKeepalive,
   exportUrl,
   getBatchStatus,
+  promoteAlternative as apiPromoteAlternative,
   setDecision as apiSetDecision,
   startBatch,
   uploadPreview,
 } from '../api/batchApi';
+import BatchResultsTable, { filterBatchRows, isUnmappedCode } from '../components/BatchResultsTable';
 import OntologyMultiSelect from '../components/OntologyMultiSelect';
 import { ONTOLOGY_OPTIONS } from '../constants/ontologies';
 import { useSession } from '../context/SessionContext';
-import type { BatchJobStatus, BatchRowResult, BatchUploadPreview } from '../types/mapping';
+import type { AlternativeResult, BatchJobStatus, BatchRowResult, BatchUploadPreview } from '../types/mapping';
+import { interruptActiveBatch, registerActiveBatchInterrupter, type BatchInterruptionOptions } from '../utils/activeBatchInterruption';
+import { promoteBatchAlternative } from '../utils/batchPromotion';
+import { BATCH_FILE_ACCEPT, isSupportedBatchFile, UNSUPPORTED_BATCH_FILE_MESSAGE } from '../utils/batchFiles';
+import { detectColumnMappings } from '../utils/columnDetection';
 import { targetOntologiesOrNull } from '../utils/ontologyPayloads';
 import './BatchPage.css';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-
-const CLINICAL_AREA_OPTIONS = [
-  { value: 'phenotype',    label: 'Phenotype' },
-  { value: 'disease',      label: 'Disease/Condition' },
-  { value: 'measurement',  label: 'Lab/Measurement' },
-  { value: 'medication',   label: 'Medication' },
-  { value: 'demographic',  label: 'Demographic' },
-  { value: 'other',        label: 'Other' },
-];
 
 const COLUMN_ROLES = [
   { key: 'field_name', label: 'Field variable name', required: true },
   { key: 'label',      label: 'Human-readable label', required: false },
   { key: 'description', label: 'Description',         required: false },
   { key: 'data_type',  label: 'Data type',            required: false },
+  {
+    key: 'target_ontology',
+    label: 'Target ontology',
+    required: false,
+    helperText: 'Choose a column when each row specifies its target ontology. Leave blank to use the Target ontologies options below.',
+  },
 ];
 
 const SAMPLE_CSV = `field_name,label,desc,data_type
@@ -46,18 +50,6 @@ cholesterol,Total Cholesterol,Total cholesterol in mg/dL,numeric`;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function confTier(c: number): 'high' | 'med' | 'low' {
-  if (c >= 0.85) return 'high';
-  if (c >= 0.5)  return 'med';
-  return 'low';
-}
-
-function confLabel(c: number): string {
-  if (c >= 0.85) return 'High';
-  if (c >= 0.5)  return 'Med';
-  return 'Low';
-}
-
 function estimateMinutes(rows: number, rag: boolean): number {
   return Math.max(1, Math.round((rows * (rag ? 5 : 2)) / 60));
 }
@@ -72,24 +64,18 @@ function downloadSample() {
   URL.revokeObjectURL(url);
 }
 
-// ── Sub-components ───────────────────────────────────────────────────────────
-
-function ConfBadge({ confidence }: { confidence: number }) {
-  const tier = confTier(confidence);
-  return (
-    <span className={`batch-conf-badge batch-conf-badge--${tier}`}>
-      {confidence >= 0.85 ? '✅' : confidence >= 0.5 ? '⚠️' : '❌'}{' '}
-      {Math.round(confidence * 100)}% {confLabel(confidence)}
-    </span>
-  );
+function isTerminalBatchStatus(status: BatchJobStatus['status'] | undefined): boolean {
+  return status === 'done' || status === 'interrupted' || status === 'failed';
 }
 
-function DecisionChip({ decision }: { decision: string }) {
-  return (
-    <span className={`batch-decision-chip batch-decision-chip--${decision}`}>
-      {decision.charAt(0).toUpperCase() + decision.slice(1)}
-    </span>
-  );
+function initialColumnMap(): Record<string, string | null> {
+  return {
+    field_name: null,
+    label: null,
+    description: null,
+    data_type: null,
+    target_ontology: null,
+  };
 }
 
 // ── Step indicator ───────────────────────────────────────────────────────────
@@ -133,13 +119,7 @@ export default function BatchPage() {
   const [isDragging, setIsDragging] = useState(false);
 
   // Column mapping config
-  const [columnMap, setColumnMap] = useState<Record<string, string | null>>({
-    field_name: null,
-    label: null,
-    description: null,
-    data_type: null,
-  });
-  const [clinicalArea, setClinicalArea] = useState<string>('phenotype');
+  const [columnMap, setColumnMap] = useState<Record<string, string | null>>(initialColumnMap);
   const [targetOntologies, setTargetOntologies] = useState<string[]>([]);
   const [useRag, setUseRag] = useState(true);
   const [autoAcceptThreshold, setAutoAcceptThreshold] = useState(85);
@@ -164,10 +144,37 @@ export default function BatchPage() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fileRef = useRef<File | null>(null);
+  const previewRef = useRef<BatchUploadPreview | null>(null);
+  const phaseRef = useRef<Phase>('upload');
+  const jobIdRef = useRef<string | null>(null);
+  const jobStatusRef = useRef<BatchJobStatus | null>(null);
+  const interruptingRef = useRef(false);
+  const sessionFinalizedRef = useRef(false);
 
   const { startSession, emitEvent, completeSession } = useSession();
   const batchSessionIdRef = useRef<string | null>(null);
   const lastCompletedRef = useRef<number>(0);
+
+  useEffect(() => {
+    fileRef.current = file;
+  }, [file]);
+
+  useEffect(() => {
+    previewRef.current = preview;
+  }, [preview]);
+
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
+
+  useEffect(() => {
+    jobIdRef.current = jobId;
+  }, [jobId]);
+
+  useEffect(() => {
+    jobStatusRef.current = jobStatus;
+  }, [jobStatus]);
 
   // ── Polling ────────────────────────────────────────────────────────────────
 
@@ -176,6 +183,129 @@ export default function BatchPage() {
       clearInterval(pollRef.current);
       pollRef.current = null;
     }
+  }, []);
+
+  const clearInterruptedRunState = useCallback((updateUi = true) => {
+    if (updateUi) {
+      setFile(null);
+      setPreview(null);
+      setColumnMap(initialColumnMap());
+      setPhase('upload');
+      setJobId(null);
+      setJobStatus(null);
+      setLocalDecisions({});
+      setExpandedRows(new Set());
+      setFilterStatus('all');
+      setSearchQuery('');
+      setError(null);
+    }
+    fileRef.current = null;
+    previewRef.current = null;
+    phaseRef.current = 'upload';
+    jobIdRef.current = null;
+    jobStatusRef.current = null;
+    batchSessionIdRef.current = null;
+    lastCompletedRef.current = 0;
+  }, []);
+
+  const recordInterruptedSession = useCallback(async (
+    sid: string | null,
+    completed: number,
+    total: number,
+    reason: string,
+  ) => {
+    if (!sid || sessionFinalizedRef.current) return;
+    sessionFinalizedRef.current = true;
+    await emitEvent(sid, {
+      timestamp: new Date().toISOString(),
+      actor: reason === 'manual' ? 'user' : 'system',
+      event_type: 'batch_interrupted',
+      payload: { completed, total, reason },
+    });
+    await completeSession(sid, 'interrupted', {
+      status: 'interrupted',
+      completed,
+      total,
+    });
+  }, [completeSession, emitEvent]);
+
+  const recordCompletedSession = useCallback(async (
+    sid: string | null,
+    status: BatchJobStatus,
+  ) => {
+    if (!sid || sessionFinalizedRef.current) return;
+    sessionFinalizedRef.current = true;
+    const mapped = status.results.filter(r => !isUnmappedCode(r.suggested_code)).length;
+    const unmapped = status.results.filter(r => isUnmappedCode(r.suggested_code)).length;
+    await emitEvent(sid, {
+      timestamp: new Date().toISOString(),
+      actor: 'system',
+      event_type: 'batch_mapping_complete',
+      payload: { mapped, unmapped },
+    });
+    await completeSession(sid, 'complete', status);
+  }, [completeSession, emitEvent]);
+
+  const interruptRegisteredBatch = useCallback(async (
+    options: BatchInterruptionOptions = {},
+  ): Promise<boolean> => {
+    const currentJobId = jobIdRef.current;
+    const currentStatus = jobStatusRef.current;
+    const sid = batchSessionIdRef.current;
+    const completed = currentStatus?.completed ?? lastCompletedRef.current;
+    const total = currentStatus?.total ?? previewRef.current?.row_count ?? 0;
+
+    if (
+      !currentJobId
+      || phaseRef.current !== 'running'
+      || isTerminalBatchStatus(currentStatus?.status)
+    ) {
+      return false;
+    }
+    if (interruptingRef.current) return true;
+
+    interruptingRef.current = true;
+    stopPoll();
+    clearInterruptedRunState(!options.keepalive);
+
+    if (options.keepalive) {
+      cancelBatchKeepalive(currentJobId);
+      await recordInterruptedSession(sid, completed, total, options.reason ?? 'unmount');
+      return true;
+    }
+
+    try {
+      const response = await cancelBatch(currentJobId);
+      if (!response.interrupted) {
+        const finalStatus = await getBatchStatus(currentJobId);
+        if (finalStatus.status === 'done') {
+          await recordCompletedSession(sid, finalStatus);
+          return false;
+        }
+      }
+    } catch {
+      cancelBatchKeepalive(currentJobId);
+    }
+
+    await recordInterruptedSession(sid, completed, total, options.reason ?? 'navigation');
+    return true;
+  }, [clearInterruptedRunState, recordCompletedSession, recordInterruptedSession, stopPoll]);
+
+  useEffect(() => {
+    const unregister = registerActiveBatchInterrupter(interruptRegisteredBatch);
+    return () => {
+      void interruptActiveBatch({ reason: 'unmount', keepalive: true }).finally(unregister);
+    };
+  }, [interruptRegisteredBatch]);
+
+  useEffect(() => {
+    const handlePageHide = () => {
+      void interruptActiveBatch({ reason: 'pagehide', keepalive: true });
+    };
+    window.addEventListener('pagehide', handlePageHide);
+    return () => {
+      window.removeEventListener('pagehide', handlePageHide);
+    };
   }, []);
 
   useEffect(() => {
@@ -197,21 +327,27 @@ export default function BatchPage() {
           }).catch(console.error);
         }
 
-        if (status.status === 'done' && sid) {
-          const mapped   = status.results.filter(r => !r.suggested_code.toUpperCase().includes('UNMAPPED')).length;
-          const unmapped = status.results.filter(r =>  r.suggested_code.toUpperCase().includes('UNMAPPED')).length;
-          emitEvent(sid, {
-            timestamp: new Date().toISOString(),
-            actor: 'system',
-            event_type: 'batch_mapping_complete',
-            payload: { mapped, unmapped },
-          }).catch(console.error);
-          completeSession(sid, 'complete', status).catch(console.error);
-        }
-
-        if (status.status === 'done' || status.status === 'cancelled') {
+        if (status.status === 'done') {
+          recordCompletedSession(sid, status).catch(console.error);
           stopPoll();
           setPhase('review');
+        }
+
+        if (status.status === 'interrupted') {
+          recordInterruptedSession(
+            sid,
+            status.completed,
+            status.total,
+            'server',
+          ).catch(console.error);
+          clearInterruptedRunState();
+          stopPoll();
+        }
+
+        if (status.status === 'failed') {
+          stopPoll();
+          setError(status.error ?? 'Batch job failed.');
+          setPhase('upload');
         }
       } catch {
         // silently ignore transient poll errors
@@ -219,31 +355,38 @@ export default function BatchPage() {
     }, 1500);
 
     return stopPoll;
-  }, [jobId, phase, stopPoll, emitEvent, completeSession]);
+  }, [
+    jobId,
+    phase,
+    stopPoll,
+    emitEvent,
+    recordCompletedSession,
+    recordInterruptedSession,
+    clearInterruptedRunState,
+  ]);
 
   // ── File handling ──────────────────────────────────────────────────────────
 
   async function handleFileSelected(f: File) {
+    if (!isSupportedBatchFile(f)) {
+      setFile(null);
+      setPreview(null);
+      setError(UNSUPPORTED_BATCH_FILE_MESSAGE);
+      return;
+    }
     setFile(f);
     setError(null);
     setUploading(true);
     try {
       const prev = await uploadPreview(f);
       setPreview(prev);
-      // Auto-map columns by guessing common names
-      const cols = prev.columns.map((c) => c.toLowerCase());
-      const guess = (candidates: string[]) => {
-        for (const c of candidates) {
-          const match = prev.columns.find((col) => col.toLowerCase() === c);
-          if (match) return match;
-        }
-        return prev.columns[0] || null;
-      };
+      const detected = detectColumnMappings(prev.columns);
       setColumnMap({
-        field_name:  guess(['field_name', 'field', 'variable', 'var_name', 'name']),
-        label:       prev.columns.find((c) => cols.includes(c.toLowerCase()) && ['label', 'field_label', 'human_label'].includes(c.toLowerCase())) || null,
-        description: prev.columns.find((c) => ['desc', 'description', 'notes', 'comment'].includes(c.toLowerCase())) || null,
-        data_type:   prev.columns.find((c) => ['data_type', 'type', 'dtype', 'datatype'].includes(c.toLowerCase())) || null,
+        field_name: detected.sourceTerm ?? null,
+        label: detected.sourceLabel ?? null,
+        description: detected.description ?? null,
+        data_type: detected.dataType ?? null,
+        target_ontology: detected.targetOntology ?? null,
       });
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : 'Could not parse file.');
@@ -270,7 +413,7 @@ export default function BatchPage() {
   function removeFile() {
     setFile(null);
     setPreview(null);
-    setColumnMap({ field_name: null, label: null, description: null, data_type: null });
+    setColumnMap(initialColumnMap());
     setError(null);
   }
 
@@ -287,24 +430,29 @@ export default function BatchPage() {
     setStarting(true);
     const selectedOntologies = targetOntologiesOrNull(targetOntologies);
     try {
+      interruptingRef.current = false;
+      sessionFinalizedRef.current = false;
       const { job_id } = await startBatch({
         file,
         columnMap,
-        clinicalArea: clinicalArea || null,
+        clinicalArea: null,
+        targetOntologyColumn: columnMap.target_ontology,
         targetOntologies,
         useRag,
         autoAcceptThreshold: autoAcceptThreshold / 100,
       });
+      jobIdRef.current = job_id;
       setJobId(job_id);
       setLocalDecisions({});
       lastCompletedRef.current = 0;
+      phaseRef.current = 'running';
       setPhase('running');
 
       try {
         const sid = await startSession('batch_map', {
           filename: file.name,
           row_count: preview.row_count,
-          clinical_area: clinicalArea || undefined,
+          target_ontology_column: columnMap.target_ontology || undefined,
           target_ontologies: selectedOntologies,
           auto_accept_threshold: autoAcceptThreshold / 100,
         });
@@ -316,7 +464,7 @@ export default function BatchPage() {
           payload: {
             filename: file.name,
             row_count: preview.row_count,
-            clinical_area: clinicalArea || null,
+            target_ontology_column: columnMap.target_ontology || null,
             target_ontologies: selectedOntologies,
             use_rag: useRag,
             auto_accept_threshold: autoAcceptThreshold / 100,
@@ -335,30 +483,73 @@ export default function BatchPage() {
   // ── Cancel ─────────────────────────────────────────────────────────────────
 
   async function handleCancel() {
-    if (!jobId) return;
-    const sid = batchSessionIdRef.current;
-    if (sid) {
-      emitEvent(sid, {
-        timestamp: new Date().toISOString(),
-        actor: 'user',
-        event_type: 'batch_cancelled',
-        payload: {},
-      }).catch(console.error);
-      completeSession(sid, 'error').catch(console.error);
-    }
-    try {
-      await cancelBatch(jobId);
-    } catch {
-      // ignore
-    }
-    stopPoll();
-    setPhase('review');
+    await interruptActiveBatch({ reason: 'manual' });
   }
 
   // ── Decision handling ──────────────────────────────────────────────────────
 
   function getEffectiveDecision(row: BatchRowResult): 'accepted' | 'rejected' | 'pending' {
     return localDecisions[row.row_index] ?? row.decision;
+  }
+
+  function replaceRowInStatus(
+    status: BatchJobStatus,
+    updatedRow: BatchRowResult,
+  ): BatchJobStatus {
+    return {
+      ...status,
+      results: status.results.map((row) => (
+        row.row_index === updatedRow.row_index ? updatedRow : row
+      )),
+    };
+  }
+
+  async function handlePromoteAlternative(row: BatchRowResult, alt: AlternativeResult) {
+    if (!jobId || !jobStatus) return;
+
+    const previousStatus = jobStatus;
+    const promotedRow = promoteBatchAlternative(row, alt);
+    const optimisticStatus = replaceRowInStatus(previousStatus, promotedRow);
+
+    setJobStatus(optimisticStatus);
+    setLocalDecisions((prev) => ({ ...prev, [row.row_index]: 'pending' }));
+
+    try {
+      const persistedRow = await apiPromoteAlternative(jobId, row.row_index, alt);
+      const nextStatus = replaceRowInStatus(optimisticStatus, persistedRow);
+      setJobStatus(nextStatus);
+      jobStatusRef.current = nextStatus;
+
+      const sid = batchSessionIdRef.current;
+      if (sid) {
+        emitEvent(sid, {
+          timestamp: new Date().toISOString(),
+          actor: 'user',
+          event_type: 'alternative_promoted',
+          payload: {
+            row_index: row.row_index,
+            field_name: row.field_name,
+            promoted_code: alt.code,
+            demoted_code: row.suggested_code,
+          },
+        }).catch(console.error);
+        if (nextStatus.status === 'done') {
+          completeSession(sid, 'complete', nextStatus).catch(console.error);
+        }
+      }
+    } catch {
+      setJobStatus(previousStatus);
+      setLocalDecisions((prev) => {
+        const next = { ...prev };
+        if (row.decision === 'pending') {
+          delete next[row.row_index];
+        } else {
+          next[row.row_index] = row.decision;
+        }
+        return next;
+      });
+      setError('Could not update the suggested mapping. Try again.');
+    }
   }
 
   async function toggleDecision(row: BatchRowResult, newDecision: 'accepted' | 'rejected') {
@@ -387,7 +578,7 @@ export default function BatchPage() {
     for (const row of jobStatus.results) {
       if (type === 'accept_high' && row.confidence >= threshold) {
         updates[row.row_index] = 'accepted';
-      } else if (type === 'reject_unmapped' && row.suggested_code.toUpperCase().includes('UNMAPPED')) {
+      } else if (type === 'reject_unmapped' && isUnmappedCode(row.suggested_code)) {
         updates[row.row_index] = 'rejected';
       } else if (type === 'reset') {
         updates[row.row_index] = 'pending';
@@ -426,8 +617,7 @@ export default function BatchPage() {
   function resetAll() {
     setFile(null);
     setPreview(null);
-    setColumnMap({ field_name: null, label: null, description: null, data_type: null });
-    setClinicalArea('phenotype');
+    setColumnMap(initialColumnMap());
     setTargetOntologies([]);
     setUseRag(true);
     setAutoAcceptThreshold(85);
@@ -440,6 +630,13 @@ export default function BatchPage() {
     setSearchQuery('');
     setError(null);
     stopPoll();
+    fileRef.current = null;
+    previewRef.current = null;
+    phaseRef.current = 'upload';
+    jobIdRef.current = null;
+    jobStatusRef.current = null;
+    interruptingRef.current = false;
+    sessionFinalizedRef.current = false;
     batchSessionIdRef.current = null;
     lastCompletedRef.current = 0;
   }
@@ -454,23 +651,14 @@ export default function BatchPage() {
   const medCount  = results.filter((r) => r.confidence >= 0.5 && r.confidence < 0.85).length;
   const lowCount  = results.filter((r) => r.confidence < 0.5).length;
 
-  const filteredResults = results.filter((r) => {
-    const dec = getEffectiveDecision(r);
-    const matchesFilter = filterStatus === 'all' || dec === filterStatus;
-    const q = searchQuery.toLowerCase();
-    const matchesSearch = !q
-      || r.field_name.toLowerCase().includes(q)
-      || (r.label ?? '').toLowerCase().includes(q)
-      || r.suggested_code.toLowerCase().includes(q)
-      || r.suggested_term.toLowerCase().includes(q);
-    return matchesFilter && matchesSearch;
-  });
+  const filteredResults = filterBatchRows(results, getEffectiveDecision, filterStatus, searchQuery);
 
   const completed = jobStatus?.completed ?? 0;
   const total = jobStatus?.total ?? preview?.row_count ?? 0;
   const progressPct = total > 0 ? Math.round((completed / total) * 100) : 0;
   const isRunning = phase === 'running' && jobStatus?.status === 'running';
   const lastField = results[results.length - 1]?.field_name ?? '';
+  const targetOntologyColumnActive = Boolean(columnMap.target_ontology);
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -480,6 +668,13 @@ export default function BatchPage() {
       <p className="batch-subtitle">
         Upload your data dictionary, let the AI map all fields, then review and export.
       </p>
+
+      <div className="batch-warning-note" role="note">
+        <span className="batch-warning-icon" aria-hidden="true">!</span>
+        <span>
+          Stay on this page until batch mapping is complete. Leaving this page will interrupt the run and discard all mapping results.
+        </span>
+      </div>
 
       <StepIndicator phase={phase} />
 
@@ -509,12 +704,12 @@ export default function BatchPage() {
                   <div className="batch-upload-main">
                     {uploading ? 'Parsing file…' : 'Drop file here or click to browse'}
                   </div>
-                  <div className="batch-upload-sub">CSV or Excel (.xlsx)</div>
+                  <div className="batch-upload-sub">CSV, TSV, or XLSX</div>
                 </div>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept=".csv,.xlsx"
+                  accept={BATCH_FILE_ACCEPT}
                   style={{ display: 'none' }}
                   onChange={onFileInputChange}
                 />
@@ -576,26 +771,11 @@ export default function BatchPage() {
                         <option key={col} value={col}>{col}</option>
                       ))}
                     </select>
+                    {'helperText' in role && role.helperText && (
+                      <p className="batch-col-map-helper">{role.helperText}</p>
+                    )}
                   </>
                 ))}
-
-                {/* Clinical area */}
-                <label className="batch-col-map-label">Clinical area</label>
-                <div>
-                  <select
-                    className="form-select"
-                    value={clinicalArea}
-                    onChange={(e) => setClinicalArea(e.target.value)}
-                  >
-                    <option value="">— select —</option>
-                    {CLINICAL_AREA_OPTIONS.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                  <p className="field-helper-sm" style={{ marginTop: 4 }}>
-                    Set a fixed value for all rows, or choose the column that contains per-row values.
-                  </p>
-                </div>
               </div>
             </div>
           )}
@@ -626,7 +806,12 @@ export default function BatchPage() {
                   options={ONTOLOGY_OPTIONS}
                   selectedValues={targetOntologies}
                   onChange={setTargetOntologies}
-                  helperText="Selected ontologies restrict the mapping results. Leave all unselected for automatic selection."
+                  disabled={targetOntologyColumnActive}
+                  helperText={
+                    targetOntologyColumnActive
+                      ? 'Per-row target ontologies are active. These options will be ignored unless Target ontology is set to "none."'
+                      : 'Selected ontologies restrict the mapping results. Leave all unselected for automatic selection.'
+                  }
                 />
               </div>
 
@@ -746,144 +931,21 @@ export default function BatchPage() {
           {results.length > 0 && (
             <div className="card">
               <h2 className="batch-section-heading">Review and Approve Mappings</h2>
-
-              {/* Bulk toolbar */}
-              <div className="batch-bulk-toolbar">
-                <button
-                  className="batch-btn-bulk"
-                  onClick={() => bulkDecision('accept_high')}
-                >
-                  Accept all High (≥{autoAcceptThreshold}%)
-                </button>
-                <button
-                  className="batch-btn-bulk"
-                  onClick={() => bulkDecision('reject_unmapped')}
-                >
-                  Reject all Unmapped
-                </button>
-                <button
-                  className="batch-btn-bulk"
-                  onClick={() => bulkDecision('reset')}
-                >
-                  Reset all
-                </button>
-                <select
-                  className="batch-filter-select"
-                  value={filterStatus}
-                  onChange={(e) => setFilterStatus(e.target.value)}
-                >
-                  <option value="all">All statuses</option>
-                  <option value="accepted">Accepted</option>
-                  <option value="rejected">Rejected</option>
-                  <option value="pending">Pending</option>
-                </select>
-                <input
-                  type="text"
-                  className="batch-search-input"
-                  placeholder="Search fields…"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-              </div>
-
-              {/* Table */}
-              <div className="batch-table-scroll">
-                <table className="batch-table">
-                  <thead>
-                    <tr>
-                      <th>Field name</th>
-                      <th>Label</th>
-                      <th>Suggested code</th>
-                      <th>Confidence</th>
-                      <th>Decision</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredResults.map((row) => {
-                      const dec = getEffectiveDecision(row);
-                      const isExpanded = expandedRows.has(row.row_index);
-                      return (
-                        <>
-                          <tr key={`row-${row.row_index}`} className="batch-table-row">
-                            <td style={{ fontFamily: 'ui-monospace, monospace', fontSize: 12, color: '#1d4ed8' }}>
-                              {row.field_name}
-                            </td>
-                            <td style={{ color: '#374151', fontSize: 13 }}>
-                              {row.label ?? '—'}
-                            </td>
-                            <td>
-                              {row.suggested_code === 'UNMAPPED' ? (
-                                <span style={{ color: '#9ca3af', fontSize: 13 }}>UNMAPPED</span>
-                              ) : (
-                                <>
-                                  <div className="batch-code-main">{row.suggested_code}</div>
-                                  <div className="batch-code-term">{row.suggested_term}</div>
-                                </>
-                              )}
-                            </td>
-                            <td>
-                              <ConfBadge confidence={row.confidence} />
-                            </td>
-                            <td>
-                              <DecisionChip decision={dec} />
-                            </td>
-                            <td>
-                              <div className="batch-actions-cell">
-                                <button
-                                  className={`batch-action-btn${dec === 'accepted' ? ' batch-action-btn--active-accept' : ''}`}
-                                  title="Accept"
-                                  onClick={() => toggleDecision(row, 'accepted')}
-                                >
-                                  👍
-                                </button>
-                                <button
-                                  className={`batch-action-btn${dec === 'rejected' ? ' batch-action-btn--active-reject' : ''}`}
-                                  title="Reject"
-                                  onClick={() => toggleDecision(row, 'rejected')}
-                                >
-                                  👎
-                                </button>
-                                {row.alternatives.length > 0 && (
-                                  <button
-                                    className="batch-action-btn"
-                                    title={isExpanded ? 'Collapse' : 'Show alternatives'}
-                                    onClick={() => toggleExpand(row.row_index)}
-                                  >
-                                    {isExpanded ? '▲' : '▼'}
-                                  </button>
-                                )}
-                              </div>
-                            </td>
-                          </tr>
-                          {isExpanded && row.alternatives.length > 0 && (
-                            <tr key={`alt-${row.row_index}`} className="batch-alt-row">
-                              <td colSpan={6}>
-                                <div className="batch-alt-list">
-                                  {row.alternatives.map((alt) => (
-                                    <div key={alt.code} className="batch-alt-item">
-                                      <span className="batch-alt-code">{alt.code}</span>
-                                      <span>{alt.term}</span>
-                                      <ConfBadge confidence={alt.confidence} />
-                                    </div>
-                                  ))}
-                                </div>
-                              </td>
-                            </tr>
-                          )}
-                        </>
-                      );
-                    })}
-                    {filteredResults.length === 0 && (
-                      <tr>
-                        <td colSpan={6} style={{ textAlign: 'center', color: '#9ca3af', padding: '20px 0' }}>
-                          {isRunning ? 'Waiting for results…' : 'No rows match filters.'}
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+              <BatchResultsTable
+                rows={results}
+                expandedRows={expandedRows}
+                filterStatus={filterStatus}
+                searchQuery={searchQuery}
+                autoAcceptThreshold={autoAcceptThreshold}
+                isRunning={isRunning}
+                getDecision={getEffectiveDecision}
+                onFilterStatusChange={setFilterStatus}
+                onSearchQueryChange={setSearchQuery}
+                onToggleExpand={toggleExpand}
+                onToggleDecision={toggleDecision}
+                onBulkDecision={bulkDecision}
+                onPromoteAlternative={handlePromoteAlternative}
+              />
 
               {/* Row summary + export */}
               <div className="batch-row-summary">

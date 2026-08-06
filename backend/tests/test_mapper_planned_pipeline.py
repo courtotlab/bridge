@@ -126,6 +126,37 @@ def test_single_mapping_constructs_planned_mapper_for_public_and_disabled(
     )
 
 
+def test_single_mapping_does_not_fabricate_missing_alternative_source(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="LOINC:8480-6",
+        term="Systolic blood pressure",
+        ontology="LOINC",
+    )
+    mapper_instance.map_term.return_value.alternatives = [
+        SimpleNamespace(
+            code="HP:0000822",
+            term="Hypertension",
+            ontology="HPO",
+            confidence=0.72,
+            explanation="Alternative-specific reasoning.",
+        )
+    ]
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+
+    response = mapper_service.map_single_term(SingleMappingRequest(source_term="sbp"))
+
+    assert response.alternatives[0].source is None
+    assert response.alternatives[0].explanation == "Alternative-specific reasoning."
+
+
 def test_single_mapping_local_injects_planned_pipeline_with_sapbert_url(monkeypatch):
     config = AppConfig(
         provider="ollama",
@@ -761,3 +792,111 @@ def test_batch_mapping_reuses_one_mapper_with_normalized_target_ontologies(monke
     assert mapper_cls.call_count == 1
     assert mapper_cls.call_args.kwargs["ontologies"] == ["LOINC", "HPO"]
     assert mapper_instance.map_term.call_count == 2
+
+
+def test_batch_mapping_uses_per_row_target_ontology_over_global_selection(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    monkeypatch.setattr(
+        mapper_service,
+        "get_validated_loinc_credentials",
+        lambda _config: ("loinc-user", "loinc-secret"),
+    )
+    mapper_service._batch_jobs.clear()
+
+    mapper_instances = {}
+
+    def mapper_factory(**kwargs):
+        ontologies = tuple(kwargs["ontologies"] or [])
+        mapper = MagicMock()
+        if ontologies == ("LOINC",):
+            mapper.map_term.return_value = _result(
+                code="LOINC:8480-6",
+                term="Systolic blood pressure",
+                ontology="LOINC",
+            )
+        elif ontologies == ("HPO",):
+            mapper.map_term.return_value = _result(
+                code="HP:0004322",
+                term="Short stature",
+                ontology="HPO",
+            )
+        else:
+            mapper.map_term.return_value = _result(
+                code="MONDO:0000001",
+                term="Disease",
+                ontology="MONDO",
+            )
+        mapper_instances[ontologies] = mapper
+        return mapper
+
+    mapper_cls = MagicMock(side_effect=mapper_factory)
+    monkeypatch.setattr("llm_ontology_mapper.OntologyMapper", mapper_cls)
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[
+            {"field_name": "sbp", "label": "Systolic blood pressure"},
+            {"field_name": "short_stature", "label": "Short stature"},
+            {"field_name": "sbp_2", "label": "Systolic blood pressure"},
+        ],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area=None,
+        target_ontologies=["MONDO"],
+        auto_accept_threshold=0.85,
+        target_ontology_column="target_ontology",
+        row_target_ontologies=["LOINC", "HPO", "LOINC"],
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    assert job["status"] == "done"
+    assert job["target_ontologies"] == ["MONDO"]
+    assert job["target_ontology_column"] == "target_ontology"
+    assert [row.ontology for row in job["results"]] == ["LOINC", "HPO", "LOINC"]
+    assert [call.kwargs["ontologies"] for call in mapper_cls.call_args_list] == [
+        ["LOINC"],
+        ["HPO"],
+    ]
+    assert mapper_instances[("LOINC",)].map_term.call_count == 2
+    assert mapper_instances[("HPO",)].map_term.call_count == 1
+
+
+def test_batch_mapping_converts_wrong_ontology_result_to_unmapped(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    monkeypatch.setattr(
+        mapper_service,
+        "get_validated_loinc_credentials",
+        lambda _config: ("loinc-user", "loinc-secret"),
+    )
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="HP:0001250",
+        term="Seizure",
+        ontology="HPO",
+    )
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "sbp", "label": "Systolic blood pressure"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area=None,
+        target_ontologies=["HPO"],
+        auto_accept_threshold=0.85,
+        target_ontology_column="target_ontology",
+        row_target_ontologies=["LOINC"],
+    )
+
+    row = mapper_service.get_batch_job(job_id)["results"][0]
+    assert row.suggested_code == "UNMAPPED"
+    assert row.suggested_term == "UNMAPPED"
+    assert row.ontology == ""
+    assert row.decision == "rejected"

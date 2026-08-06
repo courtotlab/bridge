@@ -11,7 +11,7 @@ import {
 interface SessionContextValue {
   startSession: (type: SessionType, inputSummary: InputSummary) => Promise<string>;
   emitEvent: (sessionId: string, event: SessionEvent) => Promise<void>;
-  completeSession: (sessionId: string, status: 'complete' | 'error', snapshot?: unknown) => Promise<void>;
+  completeSession: (sessionId: string, status: 'complete' | 'error' | 'interrupted', snapshot?: unknown) => Promise<void>;
 }
 
 const SessionContext = createContext<SessionContextValue | null>(null);
@@ -28,7 +28,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const completeSession = useCallback(async (
     sessionId: string,
-    status: 'complete' | 'error',
+    status: 'complete' | 'error' | 'interrupted',
     snapshot?: unknown,
   ): Promise<void> => {
     await completeSessionApi(sessionId, status, snapshot);

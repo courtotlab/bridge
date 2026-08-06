@@ -4,21 +4,14 @@ import { useNavigate } from 'react-router-dom';
 import { getConfig } from '../api/configApi';
 import { mapSingleTerm } from '../api/mappingApi';
 import OntologyMultiSelect from '../components/OntologyMultiSelect';
-import {
-  getOntologyDisplayName,
-  ONTOLOGY_OPTIONS,
-} from '../constants/ontologies';
+import TermSearchResultView from '../components/TermSearchResultView';
+import { ONTOLOGY_OPTIONS } from '../constants/ontologies';
 import { useSession } from '../context/SessionContext';
 import type { AlternativeResult, SingleMappingResponse } from '../types/mapping';
+import { downloadTermMappingCsv } from '../utils/csvExport';
 import { targetOntologiesOrNull } from '../utils/ontologyPayloads';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-
-const RETRIEVAL_MODE_TOOLTIPS: Record<string, string> = {
-  public: 'Uses the public ontology API for candidate retrieval',
-  local:  'Uses a locally-running SapBERT semantic retriever',
-  disabled: 'No retrieval — mapping relies on LLM knowledge alone',
-};
 
 const DATA_TYPE_OPTIONS = ['Numeric', 'Text', 'Boolean', 'Date', 'Categorical', 'Other'];
 
@@ -31,25 +24,9 @@ const CLINICAL_AREA_OPTIONS = [
   'Other',
 ];
 
+const SINGLE_TERM_RESULT_STORAGE_KEY = 'bridge:single-term-result';
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function getOntologyName(code: string): string {
-  return getOntologyDisplayName(code);
-}
-
-type ConfidenceTier = 'high' | 'med' | 'low';
-
-function getConfidenceTier(confidence: number): ConfidenceTier {
-  if (confidence >= 0.8) return 'high';
-  if (confidence >= 0.5) return 'med';
-  return 'low';
-}
-
-function getConfidenceLabel(confidence: number): string {
-  if (confidence >= 0.8) return 'High';
-  if (confidence >= 0.5) return 'Med';
-  return 'Low';
-}
 
 function isNoResult(response: SingleMappingResponse): boolean {
   return (
@@ -59,73 +36,40 @@ function isNoResult(response: SingleMappingResponse): boolean {
   );
 }
 
-function buildCsv(response: SingleMappingResponse): string {
-  const headers = [
-    'source_term',
-    'source_label',
-    'source_type',
-    'target_code',
-    'target_term',
-    'ontology',
-    'confidence',
-    'logic_type',
-    'notes',
-  ];
-  const escape = (v: string | number | undefined | null) => {
-    if (v === null || v === undefined) return '';
-    const s = String(v);
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"`
-      : s;
-  };
-  const row = [
-    response.source_term,
-    response.source_label,
-    response.source_type,
-    response.target_code,
-    response.target_term,
-    response.ontology,
-    response.confidence,
-    response.logic_type,
-    response.notes,
-  ].map(escape);
-  return `${headers.join(',')}\n${row.join(',')}`;
+interface StoredSingleTermResultState {
+  bestMatch: SingleMappingResponse;
+  altList: AlternativeResult[];
 }
 
-function downloadCsv(response: SingleMappingResponse): void {
-  const csv = buildCsv(response);
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${response.source_term}_mapping.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+function readStoredResultState(): StoredSingleTermResultState | null {
+  try {
+    const raw = window.sessionStorage.getItem(SINGLE_TERM_RESULT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredSingleTermResultState>;
+    if (!parsed.bestMatch) return null;
+    return {
+      bestMatch: parsed.bestMatch,
+      altList: Array.isArray(parsed.altList) ? parsed.altList : [],
+    };
+  } catch {
+    return null;
+  }
 }
 
-// ── Sub-components ───────────────────────────────────────────────────────────
-
-function ConfidenceBadge({ confidence }: { confidence: number }) {
-  const tier = getConfidenceTier(confidence);
-  const label = getConfidenceLabel(confidence);
-  const pct = Math.round(confidence * 100);
-  return (
-    <span className={`confidence-badge confidence-badge--${tier}`}>
-      ● {pct}% {label}
-    </span>
-  );
+function writeStoredResultState(state: StoredSingleTermResultState): void {
+  try {
+    window.sessionStorage.setItem(SINGLE_TERM_RESULT_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Session persistence is a convenience; mapping results still render in memory.
+  }
 }
 
-function RetrievalModeWithTooltip({ mode }: { mode: string }) {
-  const tooltip = RETRIEVAL_MODE_TOOLTIPS[mode.toLowerCase()] ?? mode;
-  return (
-    <span className="logic-type-wrap">
-      Method: <strong>{mode}</strong>{' '}
-      <span className="logic-type-tooltip" title={tooltip} aria-label={tooltip}>
-        ℹ️
-      </span>
-    </span>
-  );
+function clearStoredResultState(): void {
+  try {
+    window.sessionStorage.removeItem(SINGLE_TERM_RESULT_STORAGE_KEY);
+  } catch {
+    // Ignore unavailable storage.
+  }
 }
 
 // ── Main component ───────────────────────────────────────────────────────────
@@ -153,8 +97,13 @@ export default function SearchPage() {
   const [pageError, setPageError] = useState<PageError | null>(null);
 
   // Result state
-  const [bestMatch, setBestMatch] = useState<SingleMappingResponse | null>(null);
-  const [altList, setAltList] = useState<AlternativeResult[]>([]);
+  const [storedResultState] = useState(() => readStoredResultState());
+  const [bestMatch, setBestMatch] = useState<SingleMappingResponse | null>(
+    () => storedResultState?.bestMatch ?? null,
+  );
+  const [altList, setAltList] = useState<AlternativeResult[]>(
+    () => storedResultState?.altList ?? [],
+  );
 
   // Copy button state
   const [copied, setCopied] = useState(false);
@@ -184,6 +133,7 @@ export default function SearchPage() {
     }
     setTermError('');
     setPageError(null);
+    clearStoredResultState();
     setBestMatch(null);
     setAltList([]);
     setLoading(true);
@@ -223,13 +173,20 @@ export default function SearchPage() {
         const sorted = [...res.alternatives].sort((a, b) => b.confidence - a.confidence);
         setBestMatch(res);
         setAltList(sorted);
+        writeStoredResultState({ bestMatch: res, altList: sorted });
         const sid = sessionIdRef.current;
         if (sid) {
           emitEvent(sid, {
             timestamp: new Date().toISOString(),
             actor: 'system',
             event_type: 'mapping_complete',
-            payload: { code: res.target_code, term: res.target_term, confidence: res.confidence, logic_type: res.logic_type },
+            payload: {
+              code: res.target_code,
+              term: res.target_term,
+              confidence: res.confidence,
+              logic_type: res.logic_type,
+              retrieval_mode: res.retrieval_mode ?? null,
+            },
           }).catch(console.error);
           completeSession(sid, 'complete', res).catch(console.error);
         }
@@ -312,6 +269,7 @@ export default function SearchPage() {
     ].sort((a, b) => b.confidence - a.confidence);
     setBestMatch(promoted);
     setAltList(newAlts);
+    writeStoredResultState({ bestMatch: promoted, altList: newAlts });
     setCopied(false);
 
     const sid = sessionIdRef.current;
@@ -513,112 +471,14 @@ export default function SearchPage() {
 
       {/* ── Results ─────────────────────────────────────────────────────── */}
       {bestMatch && !isNoResult(bestMatch) && (
-        <div className="search-results">
-
-          {/* Best match card */}
-          <div className="card result-card">
-            <div className="result-card-header">
-              <span className="result-card-title-label">Best match</span>
-              <ConfidenceBadge confidence={bestMatch.confidence} />
-            </div>
-
-            <p className="result-code-term">
-              {bestMatch.target_code} · {bestMatch.target_term}
-            </p>
-
-            <p className="result-meta-line">
-              Ontology: {getOntologyName(bestMatch.ontology)}
-            </p>
-            {bestMatch.retrieval_mode && (
-              <p className="result-meta-line">
-                <RetrievalModeWithTooltip mode={bestMatch.retrieval_mode} />
-              </p>
-            )}
-            {(bestMatch.configured_provider || bestMatch.configured_model) && (
-              <>
-                {bestMatch.configured_provider && (
-                  <p className="result-meta-line">
-                    AI Provider: <strong>{bestMatch.configured_provider}</strong>{' '}
-                    <span className="logic-type-tooltip" title="The AI provider configured in Bridge settings" aria-label="AI provider info">ℹ️</span>
-                  </p>
-                )}
-                {bestMatch.configured_model && (
-                  <p className="result-meta-line">
-                    Model: <strong>{bestMatch.configured_model}</strong>{' '}
-                    <span className="logic-type-tooltip" title="The model configured in Bridge settings" aria-label="Model info">ℹ️</span>
-                  </p>
-                )}
-              </>
-            )}
-
-            {(() => {
-              // For a promoted alternative, use its explanation field.
-              // For the original best match, fall back to notes (unchanged path).
-              const raw = bestMatch.explanation ?? bestMatch.notes ?? '';
-              const cleaned = raw
-                .replace(/^Mapped\.\s*/i, '')
-                .replace(/^Mapped$/i, '')
-                .replace(/^RAG:\s*/i, '')
-                .trim();
-              return cleaned ? (
-                <blockquote className="result-notes">"{cleaned}"</blockquote>
-              ) : null;
-            })()}
-
-            <div className="result-actions">
-              <button
-                className="btn-outline"
-                onClick={handleCopy}
-              >
-                {copied ? '✅ Copied!' : `📋 Copy code: ${bestMatch.target_code}`}
-              </button>
-              <button
-                className="btn-outline"
-                onClick={() => downloadCsv(bestMatch)}
-              >
-                💾 Download as CSV
-              </button>
-            </div>
-          </div>
-
-          {/* Alternatives table */}
-          {altList.length > 0 && (
-            <div className="card alternatives-card">
-              <h2 className="alternatives-heading">Other suggestions</h2>
-              <table className="alternatives-table">
-                <thead>
-                  <tr>
-                    <th>Code</th>
-                    <th>Term</th>
-                    <th>Confidence</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {altList.map((alt) => (
-                    <tr
-                      key={alt.code}
-                      className="alternatives-row"
-                      onClick={() => handlePromote(alt)}
-                      tabIndex={0}
-                      onKeyDown={(e) => e.key === 'Enter' && handlePromote(alt)}
-                      role="button"
-                      aria-label={`Promote ${alt.code} to best match`}
-                    >
-                      <td className="alt-code">{alt.code}</td>
-                      <td>{alt.term}</td>
-                      <td>
-                        <ConfidenceBadge confidence={alt.confidence} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <p className="field-helper-sm" style={{ marginTop: 8 }}>
-                Click any row to promote it to the best-match card.
-              </p>
-            </div>
-          )}
-        </div>
+        <TermSearchResultView
+          bestMatch={bestMatch}
+          alternatives={altList}
+          copied={copied}
+          onCopy={handleCopy}
+          onDownloadCsv={() => downloadTermMappingCsv(bestMatch)}
+          onPromote={handlePromote}
+        />
       )}
     </div>
   );

@@ -152,6 +152,11 @@
   color: #713f12;
 }
 
+.val-badge--error {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
 /* ── Footer actions ─────────────────────────────────────────────────── */
 .val-footer {
   display: flex;

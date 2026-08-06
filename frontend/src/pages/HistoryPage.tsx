@@ -1,7 +1,28 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
 import { deleteSession, exportUrl, getSession, getSessions } from '../api/historyApi';
-import type { EventRecord, InputSummary, SessionRecord, SessionStatus, SessionSummary, SessionType } from '../types/session';
+import BatchResultsTable from '../components/BatchResultsTable';
+import TermSearchResultView from '../components/TermSearchResultView';
+import ValidationResultsTable from '../components/ValidationResultsTable';
+import type {
+  BatchMapHistoryDetails,
+  HistoryDetails,
+  HistoryConfiguration,
+  InputSummary,
+  SessionStatus,
+  SessionSummary,
+  SessionType,
+  TermSearchHistoryDetails,
+  ValidationHistoryDetails,
+} from '../types/session';
+import {
+  downloadBatchRowsCsv,
+  downloadTermMappingCsv,
+  downloadValidationCsv,
+} from '../utils/csvExport';
+import { formatRetrievalMode } from '../utils/retrievalMode';
+import './BatchPage.css';
 import './HistoryPage.css';
+import './ValidatorPage.css';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -13,19 +34,6 @@ function formatDate(iso: string): string {
     hour: '2-digit',
     minute: '2-digit',
   });
-}
-
-function relativeTime(eventIso: string, startIso: string): string {
-  const diffMs = new Date(eventIso).getTime() - new Date(startIso).getTime();
-  const secs = Math.max(0, Math.round(diffMs / 1000));
-  if (secs < 60) return `${secs}s after start`;
-  return `${Math.round(secs / 60)} min after start`;
-}
-
-function formatEventType(raw: string): string {
-  return raw
-    .replace(/_/g, ' ')
-    .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function inputSummaryLabel(type: SessionType, summary: InputSummary): string {
@@ -48,18 +56,102 @@ export function formatOntologySummary(summary: InputSummary): string {
   return 'Automatic';
 }
 
-function inputSummaryMetaRows(summary: InputSummary): Array<[string, string]> {
-  const rows: Array<[string, string]> = [];
-  if (summary.filename)               rows.push(['File', summary.filename]);
-  if (summary.row_count != null)      rows.push(['Rows', String(summary.row_count)]);
-  if (summary.term)                   rows.push(['Term', summary.term]);
-  if (summary.codes && summary.codes.length > 0) rows.push(['Codes', `${summary.codes.length} codes`]);
-  if (summary.clinical_area)          rows.push(['Area', summary.clinical_area]);
-  if (summary.term || summary.filename) rows.push(['Ontologies', formatOntologySummary(summary)]);
-  if (summary.auto_accept_threshold != null) {
-    rows.push(['Auto-accept', `${Math.round(summary.auto_accept_threshold * 100)}%`]);
+function formatValue(value: unknown): string | null {
+  if (value === null || value === undefined || value === '') return null;
+  if (Array.isArray(value)) return value.length > 0 ? value.join(', ') : null;
+  if (typeof value === 'boolean') return value ? 'Enabled' : 'Disabled';
+  if (typeof value === 'number') return String(value);
+  return String(value);
+}
+
+function formatPercent(value: unknown): string | null {
+  if (typeof value !== 'number') return null;
+  return `${Math.round(value * 100)}%`;
+}
+
+function addRow(rows: Array<[string, string]>, label: string, value: unknown): void {
+  const formatted = formatValue(value);
+  if (formatted) rows.push([label, formatted]);
+}
+
+function addPercentRow(rows: Array<[string, string]>, label: string, value: unknown): void {
+  const formatted = formatPercent(value);
+  if (formatted) rows.push([label, formatted]);
+}
+
+function detailPrimaryLabel(detail: HistoryDetails): string {
+  if (detail.type === 'term_search') {
+    return formatValue(detail.input.source_term) ?? formatValue(detail.input.term) ?? 'Term search';
   }
+  if (detail.type === 'batch_map') {
+    return formatValue(detail.input.filename) ?? 'Batch map';
+  }
+  const codes = Array.isArray(detail.input.codes) ? detail.input.codes : [];
+  if (codes.length > 0) {
+    const preview = codes.slice(0, 3).join(', ');
+    return codes.length > 3 ? `${preview} +${codes.length - 3} more` : preview;
+  }
+  return detail.result.summary.total_count > 0
+    ? `${detail.result.summary.total_count} submitted codes`
+    : 'Validation';
+}
+
+function configurationRows(configuration?: HistoryConfiguration | null): Array<[string, string]> {
+  if (!configuration) return [];
+  const rows: Array<[string, string]> = [];
+  addRow(rows, 'Selected ontologies', configuration.target_ontologies);
+  addRow(rows, 'Target ontology column', configuration.target_ontology_column);
+  addPercentRow(rows, 'Auto-accept threshold', configuration.auto_accept_threshold);
+  addRow(rows, 'Retrieval method', configuration.retrieval_method ? formatRetrievalMode(configuration.retrieval_method) : null);
+  addRow(rows, 'AI provider', configuration.provider);
+  addRow(rows, 'Model', configuration.model);
+  addRow(rows, 'RAG/retrieval', configuration.rag_enabled);
   return rows;
+}
+
+function termSearchSummaryRows(detail: TermSearchHistoryDetails): Array<[string, string]> {
+  const rows: Array<[string, string]> = [];
+  addRow(rows, 'Original term', detail.input.source_term ?? detail.input.term);
+  addRow(rows, 'Source label', detail.input.source_label);
+  addRow(rows, 'Description', detail.input.source_description);
+  addRow(rows, 'Data type', detail.input.source_data_type);
+  addRow(rows, 'Clinical area', detail.input.clinical_area);
+  return [...rows, ...configurationRows(detail.configuration)];
+}
+
+function batchSummaryRows(detail: BatchMapHistoryDetails): Array<[string, string]> {
+  const rows: Array<[string, string]> = [];
+  addRow(rows, 'Filename', detail.input.filename);
+  addRow(rows, 'Total rows', detail.result.summary.total_rows ?? detail.input.row_count);
+  addRow(rows, 'Completed mappings', detail.result.summary.completed_count);
+  addRow(rows, 'Accepted', detail.result.summary.accepted_count);
+  addRow(rows, 'Pending', detail.result.summary.pending_count);
+  addRow(rows, 'Rejected', detail.result.summary.rejected_count);
+  addRow(rows, 'Unmapped', detail.result.summary.unmapped_count);
+  return [...rows, ...configurationRows(detail.configuration)];
+}
+
+function validationSummaryRows(detail: ValidationHistoryDetails): Array<[string, string]> {
+  const rows: Array<[string, string]> = [];
+  const codes = Array.isArray(detail.input.codes) ? detail.input.codes : [];
+  addRow(rows, 'Submitted codes', codes.length > 0 ? `${codes.length} codes` : undefined);
+  addRow(rows, 'Valid', detail.result.summary.valid_count);
+  addRow(rows, 'Deprecated', detail.result.summary.deprecated_count);
+  addRow(rows, 'Not found', detail.result.summary.not_found_count);
+  addRow(rows, 'Errors', detail.result.summary.error_count);
+  return rows;
+}
+
+function getSummaryRows(detail: HistoryDetails): Array<[string, string]> {
+  if (detail.type === 'term_search') return termSearchSummaryRows(detail);
+  if (detail.type === 'batch_map') return batchSummaryRows(detail);
+  return validationSummaryRows(detail);
+}
+
+function canDownloadCsv(detail: HistoryDetails): boolean {
+  if (detail.type === 'term_search') return Boolean(detail.result.best_match);
+  if (detail.type === 'batch_map') return detail.result.rows.length > 0;
+  return detail.result.results.length > 0;
 }
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -83,6 +175,7 @@ const STATUS_META: Record<SessionStatus, { label: string; cls: string }> = {
   in_progress: { label: 'In Progress', cls: 'hist-status-badge--in-progress' },
   complete:    { label: 'Complete',    cls: 'hist-status-badge--complete'    },
   error:       { label: 'Error',       cls: 'hist-status-badge--error'       },
+  interrupted: { label: 'Interrupted', cls: 'hist-status-badge--interrupted' },
 };
 
 function StatusBadge({ status }: { status: SessionStatus }) {
@@ -90,43 +183,19 @@ function StatusBadge({ status }: { status: SessionStatus }) {
   return <span className={`hist-status-badge ${cls}`}>{label}</span>;
 }
 
-function PayloadTags({ payload }: { payload: Record<string, unknown> }) {
-  const tags = Object.entries(payload)
-    .filter(([, v]) => v !== null && v !== undefined && typeof v !== 'object')
-    .map(([k, v]) => `${k}: ${String(v)}`)
-    .filter((s) => s.length <= 48);
-  if (tags.length === 0) return null;
-  return (
-    <div className="history-event-tags">
-      {tags.map((tag) => (
-        <span key={tag} className="hist-payload-tag">{tag}</span>
-      ))}
-    </div>
-  );
-}
-
-function TimelineItem({ event, startIso }: { event: EventRecord; startIso: string }) {
-  return (
-    <div className="history-timeline-item">
-      <span className={`history-timeline-dot history-timeline-dot--${event.actor}`} aria-hidden="true" />
-      <div className="history-timeline-content">
-        <span className="history-event-type">{formatEventType(event.event_type)}</span>
-        <PayloadTags payload={event.payload} />
-        <span className="history-event-time">{relativeTime(event.timestamp, startIso)}</span>
-      </div>
-    </div>
-  );
-}
-
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function HistoryPage() {
   const [sessions, setSessions]           = useState<SessionSummary[]>([]);
   const [loading, setLoading]             = useState(true);
-  const [openSession, setOpenSession]     = useState<SessionRecord | null>(null);
+  const [openSession, setOpenSession]     = useState<HistoryDetails | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [deleteError, setDeleteError]     = useState<string | null>(null);
+  const [copiedCode, setCopiedCode]       = useState(false);
+  const [expandedBatchRows, setExpandedBatchRows] = useState<Set<number>>(new Set());
+  const [batchFilterStatus, setBatchFilterStatus] = useState('all');
+  const [batchSearchQuery, setBatchSearchQuery] = useState('');
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -172,12 +241,16 @@ export default function HistoryPage() {
   }, [startPolling, stopPoll]);
 
   async function handleReopen(id: string) {
-    if (openSession?.session_id === id) {
+    if (openSession?.id === id) {
       setOpenSession(null);
       return;
     }
     setLoadingDetail(true);
     setOpenSession(null);
+    setCopiedCode(false);
+    setExpandedBatchRows(new Set());
+    setBatchFilterStatus('all');
+    setBatchSearchQuery('');
     try {
       const session = await getSession(id);
       setOpenSession(session);
@@ -193,7 +266,7 @@ export default function HistoryPage() {
     try {
       await deleteSession(id);
       setSessions((prev) => prev.filter((s) => s.session_id !== id));
-      if (openSession?.session_id === id) setOpenSession(null);
+      if (openSession?.id === id) setOpenSession(null);
     } catch {
       setDeleteError('Could not delete session — try again.');
     } finally {
@@ -203,6 +276,36 @@ export default function HistoryPage() {
 
   const hasInProgress = sessions.some((s) => s.status === 'in_progress');
   const panelOpen = openSession !== null || loadingDetail;
+
+  function handleCopyTermCode(detail: TermSearchHistoryDetails) {
+    const code = detail.result.best_match?.target_code;
+    if (!code) return;
+    navigator.clipboard.writeText(code).then(() => {
+      setCopiedCode(true);
+      window.setTimeout(() => setCopiedCode(false), 2000);
+    });
+  }
+
+  function handleDownloadCsv(detail: HistoryDetails) {
+    if (detail.type === 'term_search' && detail.result.best_match) {
+      downloadTermMappingCsv(detail.result.best_match, detail.created_at);
+    } else if (detail.type === 'batch_map') {
+      const filename = detail.input.filename
+        ? `${String(detail.input.filename).replace(/\.[^.]+$/, '')}_history_results.csv`
+        : 'batch-history-results.csv';
+      downloadBatchRowsCsv(detail.result.rows, filename);
+    } else if (detail.type === 'validation') {
+      downloadValidationCsv(detail.result.results, detail.created_at);
+    }
+  }
+
+  function toggleBatchExpand(rowIndex: number) {
+    setExpandedBatchRows((prev) => {
+      const next = new Set(prev);
+      next.has(rowIndex) ? next.delete(rowIndex) : next.add(rowIndex);
+      return next;
+    });
+  }
 
   // ── Render ──────────────────────────────────────────────────────────────────
 
@@ -260,7 +363,7 @@ export default function HistoryPage() {
                   {sessions.map((s) => (
                     <tr
                       key={s.session_id}
-                      className={openSession?.session_id === s.session_id ? 'history-row--active' : ''}
+                      className={openSession?.id === s.session_id ? 'history-row--active' : ''}
                     >
                       <td><TypeBadge type={s.type} /></td>
                       <td>
@@ -278,11 +381,11 @@ export default function HistoryPage() {
                       <td>
                         <div className="hist-actions">
                           <button
-                            className={`hist-btn-sm hist-btn-reopen${openSession?.session_id === s.session_id ? ' hist-btn-reopen--active' : ''}`}
+                            className={`hist-btn-sm hist-btn-reopen${openSession?.id === s.session_id ? ' hist-btn-reopen--active' : ''}`}
                             onClick={() => handleReopen(s.session_id)}
                             disabled={loadingDetail}
                           >
-                            {loadingDetail && openSession?.session_id !== s.session_id ? 'Re-open' : 'Re-open'}
+                            View Details
                           </button>
                           <a
                             href={exportUrl(s.session_id)}
@@ -328,7 +431,7 @@ export default function HistoryPage() {
 
         {/* ── Detail panel ───────────────────────────────────────────────── */}
         {panelOpen && (
-          <aside className="history-panel">
+          <aside className="history-panel history-panel--wide">
             {loadingDetail ? (
               <div className="history-panel-loading">
                 <span className="spinner" style={{ borderTopColor: '#6b7280', borderColor: 'rgba(0,0,0,0.1)' }} aria-hidden="true" />
@@ -336,17 +439,27 @@ export default function HistoryPage() {
               </div>
             ) : openSession ? (
               <>
-                {/* Panel header */}
                 <div className="history-panel-header">
                   <div className="history-panel-header-meta">
                     <TypeBadge type={openSession.type} />
                     <p className="history-panel-title" style={{ marginTop: 8 }}>
-                      {inputSummaryLabel(openSession.type, openSession.input_summary)}
+                      {detailPrimaryLabel(openSession)}
                     </p>
                     <p className="history-panel-subtitle">
-                      {formatDate(openSession.created_at)} · {openSession.event_count} event{openSession.event_count !== 1 ? 's' : ''}
+                      {formatDate(openSession.created_at)}
                     </p>
+                    <div className="history-panel-header-status">
+                      <StatusBadge status={openSession.status} />
+                    </div>
                   </div>
+                  {canDownloadCsv(openSession) && (
+                    <button
+                      className="btn-primary history-download-btn"
+                      onClick={() => handleDownloadCsv(openSession)}
+                    >
+                      Download CSV
+                    </button>
+                  )}
                   <button
                     className="history-panel-close"
                     onClick={() => setOpenSession(null)}
@@ -356,14 +469,11 @@ export default function HistoryPage() {
                   </button>
                 </div>
 
-                {/* Panel body */}
                 <div className="history-panel-body">
-
-                  {/* Input summary */}
                   <div className="history-panel-section">
-                    <p className="history-panel-section-title">Input</p>
+                    <p className="history-panel-section-title">Session summary</p>
                     <dl className="hist-meta-grid">
-                      {inputSummaryMetaRows(openSession.input_summary).map(([k, v]) => (
+                      {getSummaryRows(openSession).map(([k, v]) => (
                         <Fragment key={k}>
                           <dt className="hist-meta-key">{k}</dt>
                           <dd className="hist-meta-val" style={{ margin: 0 }}>{v}</dd>
@@ -374,34 +484,74 @@ export default function HistoryPage() {
                     </dl>
                   </div>
 
-                  {/* Event timeline */}
-                  <div className="history-panel-section">
-                    <p className="history-panel-section-title">Event Timeline</p>
-                    {openSession.events.length === 0 ? (
-                      <p style={{ margin: 0, fontSize: 12, color: '#9ca3af' }}>No events recorded.</p>
-                    ) : (
-                      <div className="history-timeline">
-                        {openSession.events.map((event, i) => (
-                          <TimelineItem
-                            key={i}
-                            event={event}
-                            startIso={openSession.created_at}
-                          />
-                        ))}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Result snapshot */}
-                  {openSession.result_snapshot != null && (
+                  {openSession.failure?.message && (
                     <div className="history-panel-section">
-                      <p className="history-panel-section-title">Result Snapshot</p>
-                      <pre className="hist-snapshot">
-                        {JSON.stringify(openSession.result_snapshot, null, 2)}
-                      </pre>
+                      <div className="history-failure-card">
+                        <p className="history-failure-title">Session failed</p>
+                        <p className="history-failure-message">{openSession.failure.message}</p>
+                      </div>
                     </div>
                   )}
 
+                  {openSession.status === 'in_progress' && (
+                    <div className="history-panel-section">
+                      <div className="history-progress-card">
+                        This session is still in progress. Latest persisted results are shown when available.
+                      </div>
+                    </div>
+                  )}
+
+                  {openSession.legacy_message && (
+                    <div className="history-panel-section">
+                      <div className="history-legacy-card">{openSession.legacy_message}</div>
+                    </div>
+                  )}
+
+                  {openSession.type === 'term_search' && openSession.result.best_match && (
+                    <div className="history-panel-section history-results-section">
+                      <TermSearchResultView
+                        bestMatch={openSession.result.best_match}
+                        alternatives={openSession.result.alternatives}
+                        copied={copiedCode}
+                        readOnly
+                        onCopy={() => handleCopyTermCode(openSession)}
+                        onDownloadCsv={() => handleDownloadCsv(openSession)}
+                      />
+                    </div>
+                  )}
+
+                  {openSession.type === 'batch_map' && openSession.result.rows.length > 0 && (
+                    <div className="history-panel-section history-results-section">
+                      <div className="card">
+                        <h2 className="batch-section-heading">Archived Mappings</h2>
+                        <BatchResultsTable
+                          rows={openSession.result.rows}
+                          expandedRows={expandedBatchRows}
+                          filterStatus={batchFilterStatus}
+                          searchQuery={batchSearchQuery}
+                          readOnly
+                          isRunning={openSession.status === 'in_progress'}
+                          onFilterStatusChange={setBatchFilterStatus}
+                          onSearchQueryChange={setBatchSearchQuery}
+                          onToggleExpand={toggleBatchExpand}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {openSession.type === 'validation' && openSession.result.results.length > 0 && (
+                    <div className="history-panel-section history-results-section">
+                      <div className="card">
+                        <div className="val-results-header">
+                          <h2 className="val-results-heading">Validation Results</h2>
+                          <span className="val-count-badge">
+                            {openSession.result.results.length} code{openSession.result.results.length !== 1 ? 's' : ''} checked
+                          </span>
+                        </div>
+                        <ValidationResultsTable rows={openSession.result.results} showOntology />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </>
             ) : null}

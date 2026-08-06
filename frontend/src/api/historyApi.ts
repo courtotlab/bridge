@@ -1,13 +1,13 @@
 import client from './client';
-import type { SessionRecord, SessionSummary } from '../types/session';
+import type { HistoryDetails, SessionSummary } from '../types/session';
 
 export async function getSessions(): Promise<SessionSummary[]> {
   const { data } = await client.get<SessionSummary[]>('/history');
   return data;
 }
 
-export async function getSession(id: string): Promise<SessionRecord> {
-  const { data } = await client.get<SessionRecord>(`/history/${id}`);
+export async function getSession(id: string): Promise<HistoryDetails> {
+  const { data } = await client.get<HistoryDetails>(`/history/${id}`);
   return data;
 }
 

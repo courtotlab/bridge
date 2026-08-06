@@ -708,9 +708,106 @@ code {
   gap: 4px;
 }
 
-.logic-type-tooltip {
+.info-tooltip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+}
+
+.info-tooltip-trigger {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #64748b;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: help;
-  font-size: 13px;
+  vertical-align: middle;
+  appearance: none;
+}
+
+.info-tooltip-trigger svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.9;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.info-tooltip-trigger:hover,
+.info-tooltip-trigger:focus-visible {
+  color: #1d4ed8;
+  background: rgba(37, 99, 235, 0.08);
+}
+
+.info-tooltip-trigger:focus-visible {
+  outline: 2px solid #1d4ed8;
+  outline-offset: 1px;
+}
+
+.info-tooltip-bubble {
+  position: fixed;
+  z-index: 20;
+  width: max-content;
+  max-width: 280px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: #111827;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.16);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -100%) translateY(2px);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  visibility: hidden;
+  white-space: normal;
+}
+
+.info-tooltip-bubble--visible {
+  opacity: 1;
+  transform: translate(-50%, -100%);
+  visibility: visible;
+}
+
+.mapping-details-tooltip {
+  max-width: 320px;
+  padding: 9px 10px;
+}
+
+.mapping-details-tooltip-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mapping-details-tooltip-section {
+  min-width: 0;
+}
+
+.mapping-details-tooltip-label {
+  display: block;
+  margin-bottom: 2px;
+  color: #cbd5e1;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mapping-details-tooltip-value {
+  display: block;
+  overflow-wrap: anywhere;
 }
 
 .result-notes {

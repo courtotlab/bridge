@@ -12,6 +12,35 @@
   color: #6b7280;
 }
 
+.batch-warning-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 0 18px;
+  padding: 11px 14px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: #92400e;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+  border-radius: 8px;
+}
+
+.batch-warning-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: #f59e0b;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 /* ── Step indicator ─────────────────────────────────────────────────── */
 .batch-steps {
   display: flex;
@@ -383,17 +412,40 @@
   background: #f9fafb;
 }
 
+.batch-field-name {
+  font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  font-size: 12px;
+  color: #1d4ed8;
+  overflow-wrap: anywhere;
+}
+
+.batch-label-cell {
+  color: #374151;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.batch-unmapped-code {
+  color: #9ca3af;
+  font-size: 13px;
+}
+
 .batch-code-main {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
   font-size: 12px;
   color: #1d4ed8;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .batch-code-term {
   font-size: 11px;
   color: #6b7280;
   margin-top: 2px;
+  overflow-wrap: anywhere;
 }
 
 /* ── Decision chip ──────────────────────────────────────────────────── */
@@ -441,6 +493,11 @@
   display: flex;
   align-items: center;
   gap: 4px;
+}
+
+.batch-readonly-expand-cell {
+  width: 92px;
+  text-align: center;
 }
 
 .batch-action-btn {
@@ -494,11 +551,35 @@
 }
 
 .batch-alt-code {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-family: ui-monospace, 'SFMono-Regular', Menlo, monospace;
   font-size: 11px;
   color: #1d4ed8;
   font-weight: 600;
-  min-width: 80px;
+  min-width: 104px;
+}
+
+.batch-alt-use-btn {
+  padding: 4px 9px;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  background: #fff;
+  color: #1d4ed8;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.batch-alt-use-btn:hover {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.batch-alt-use-btn:focus-visible {
+  outline: 2px solid #1d4ed8;
+  outline-offset: 1px;
 }
 
 /* ── Row summary ────────────────────────────────────────────────────── */

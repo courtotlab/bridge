@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { getStatus } from '../api/configApi';
 import type { LayerStatus } from '../types/config';
+import { interruptActiveBatch } from '../utils/activeBatchInterruption';
 
 const NAV_LINKS = [
   { label: 'Term Search', to: '/search' },
@@ -41,6 +42,9 @@ function layerStatusLabel(key: keyof LayerStatus, state: string): string {
 
 export default function Sidebar() {
   const [layerStatus, setLayerStatus] = useState<LayerStatus | null>(null);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const navigationSeqRef = useRef(0);
 
   function fetchStatus() {
     getStatus()
@@ -70,7 +74,19 @@ export default function Sidebar() {
           <li key={to}>
             <NavLink
               to={to}
+              onClick={async (event) => {
+                event.preventDefault();
+                if (location.pathname === to) return;
+
+                const seq = navigationSeqRef.current + 1;
+                navigationSeqRef.current = seq;
+                await interruptActiveBatch({ reason: 'navigation' });
+                if (navigationSeqRef.current === seq) {
+                  navigate(to);
+                }
+              }}
               className={({ isActive }) => `sidebar-link ${isActive ? 'sidebar-link-active' : ''}`}
+              aria-disabled={location.pathname === to}
             >
               {label}
             </NavLink>

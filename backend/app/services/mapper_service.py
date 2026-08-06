@@ -1,5 +1,7 @@
 import logging
+import threading
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from app.models.mapping import (
@@ -17,6 +19,7 @@ from app.utils.ontology import normalize_target_ontologies
 
 # ── Batch job store ──────────────────────────────────────────────────────────
 _batch_jobs: dict[str, dict] = {}
+_batch_jobs_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -287,6 +290,15 @@ def _bridge_mapping_values(result) -> tuple[str, str, str]:
     return target_code, target_term, ontology
 
 
+def _ontology_matches_allow_list(ontology: str, allowed: list[str] | None) -> bool:
+    if not allowed:
+        return True
+    normalized_ontology = _normalize_for_comparison(ontology)
+    return normalized_ontology in {
+        _normalize_for_comparison(allowed_ontology) for allowed_ontology in allowed
+    }
+
+
 def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
     from llm_ontology_mapper import OntologyMapper  # type: ignore[import-untyped]
 
@@ -340,7 +352,7 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
             term=a.term,
             ontology=a.ontology,
             confidence=a.confidence,
-            source=getattr(a, "source", "llm"),
+            source=getattr(a, "source", None),
             explanation=getattr(a, "explanation", None),
         )
         for a in result.alternatives
@@ -390,45 +402,99 @@ def start_batch_job(
     clinical_area: str | None,
     target_ontologies: list[str] | None,
     auto_accept_threshold: float,
+    target_ontology_column: str | None = None,
+    row_target_ontologies: list[str] | None = None,
 ) -> str:
-    import threading
-
     job_id = str(uuid.uuid4())
     normalized_target_ontologies = normalize_target_ontologies(target_ontologies)
-    _batch_jobs[job_id] = {
-        "status": "running",
-        "total": len(records),
-        "completed": 0,
-        "results": [],
-        "target_ontologies": normalized_target_ontologies,
-        "cancel": False,
-    }
+    per_row_target_ontologies = (
+        row_target_ontologies if row_target_ontologies is not None else None
+    )
+    if per_row_target_ontologies is not None and len(per_row_target_ontologies) != len(
+        records
+    ):
+        raise ValueError("row_target_ontologies must match the number of batch records")
+    with _batch_jobs_lock:
+        _batch_jobs[job_id] = {
+            "status": "running",
+            "total": len(records),
+            "completed": 0,
+            "results": [],
+            "target_ontologies": normalized_target_ontologies,
+            "target_ontology_column": target_ontology_column,
+            "cancel_requested": False,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     def run():
         from llm_ontology_mapper import OntologyMapper  # type: ignore[import-untyped]
 
         from app.models.mapping import BatchRowResult
 
-        # Initialise once for the entire batch — not once per term.
+        def mark_interrupted() -> None:
+            with _batch_jobs_lock:
+                job = _batch_jobs.get(job_id)
+                if not job or job["status"] == "done":
+                    return
+                if job["status"] == "interrupted":
+                    return
+                job["cancel_requested"] = True
+                job["status"] = "interrupted"
+                job["results"] = []
+                job["interrupted_at"] = datetime.now(timezone.utc).isoformat()
+
+        def cancellation_requested() -> bool:
+            with _batch_jobs_lock:
+                job = _batch_jobs.get(job_id)
+                return bool(
+                    job
+                    and (
+                        job.get("cancel_requested")
+                        or job.get("status") == "interrupted"
+                    )
+                )
+
+        # Build each distinct mapper allow-list once, then reuse it for matching rows.
         try:
             _validate_config()
             config = load_config()
             mapped_entity_type = _map_entity_type(clinical_area)
-            mapper_kwargs, mapping_warning = _build_mapper_kwargs(
-                config,
-                ontologies=normalized_target_ontologies,
-            )
-            mapper = OntologyMapper(**mapper_kwargs)
+            mapper_cache: dict[tuple[str, ...], tuple[Any, str | None]] = {}
+
+            def mapper_for(
+                effective_target_ontologies: list[str] | None,
+            ) -> tuple[Any, str | None]:
+                key = tuple(effective_target_ontologies or [])
+                cached = mapper_cache.get(key)
+                if cached:
+                    return cached
+
+                mapper_kwargs, mapping_warning = _build_mapper_kwargs(
+                    config,
+                    ontologies=effective_target_ontologies,
+                )
+                cached = (OntologyMapper(**mapper_kwargs), mapping_warning)
+                mapper_cache[key] = cached
+                return cached
+
+            if per_row_target_ontologies is not None:
+                for ontology in dict.fromkeys(per_row_target_ontologies):
+                    mapper_for([ontology])
+            else:
+                mapper_for(normalized_target_ontologies)
         except Exception as exc:  # noqa: BLE001 - preserve batch row failure handling
             logger.error("Batch job %s failed during initialisation: %s", job_id, exc)
-            _batch_jobs[job_id]["status"] = "failed"
-            _batch_jobs[job_id]["error"] = str(exc)
+            with _batch_jobs_lock:
+                job = _batch_jobs.get(job_id)
+                if job and job["status"] != "interrupted":
+                    job["status"] = "failed"
+                    job["error"] = str(exc)
+                    job["ended_at"] = datetime.now(timezone.utc).isoformat()
             return
 
-        job = _batch_jobs[job_id]
         for i, rec in enumerate(records):
-            if job["cancel"]:
-                job["status"] = "cancelled"
+            if cancellation_requested():
+                mark_interrupted()
                 return
             field_name_col = column_map.get("field_name") or "field_name"
             label_col = column_map.get("label")
@@ -442,6 +508,12 @@ def start_batch_job(
 
             effective_label = label or description
             effective_term = effective_label or field_name
+            effective_target_ontologies = (
+                [per_row_target_ontologies[i]]
+                if per_row_target_ontologies is not None
+                else normalized_target_ontologies
+            )
+            mapper, mapping_warning = mapper_for(effective_target_ontologies)
 
             print(
                 f'[Batch] Mapping term {i + 1}/{len(records)}: "{effective_term}" | '
@@ -457,6 +529,13 @@ def start_batch_job(
                     entity_type=mapped_entity_type,
                 )
                 target_code, target_term, ontology = _bridge_mapping_values(result)
+                if target_code != "UNMAPPED" and not _ontology_matches_allow_list(
+                    ontology,
+                    effective_target_ontologies,
+                ):
+                    target_code = "UNMAPPED"
+                    target_term = "UNMAPPED"
+                    ontology = ""
                 confidence_pct = result.confidence
                 decision = (
                     "accepted" if confidence_pct >= auto_accept_threshold else "pending"
@@ -474,10 +553,14 @@ def start_batch_job(
                         term=a.term,
                         ontology=a.ontology,
                         confidence=a.confidence,
-                        source=getattr(a, "source", "llm"),
+                        source=getattr(a, "source", None),
                         explanation=getattr(a, "explanation", None),
                     )
                     for a in result.alternatives
+                    if _ontology_matches_allow_list(
+                        getattr(a, "ontology", ""),
+                        effective_target_ontologies,
+                    )
                 ]
 
                 row = BatchRowResult(
@@ -512,32 +595,144 @@ def start_batch_job(
                     decision="rejected",
                     notes=str(exc) or type(exc).__name__,
                 )
-            job["results"].append(row)
-            job["completed"] = i + 1
-        job["status"] = "done"
+            with _batch_jobs_lock:
+                job = _batch_jobs.get(job_id)
+                if not job:
+                    return
+                if job.get("cancel_requested") or job["status"] == "interrupted":
+                    job["status"] = "interrupted"
+                    job["results"] = []
+                    job["interrupted_at"] = datetime.now(timezone.utc).isoformat()
+                    return
+                job["results"].append(row)
+                job["completed"] = i + 1
+
+        with _batch_jobs_lock:
+            job = _batch_jobs.get(job_id)
+            if not job:
+                return
+            if job.get("cancel_requested") or job["status"] == "interrupted":
+                job["status"] = "interrupted"
+                job["results"] = []
+                job["interrupted_at"] = datetime.now(timezone.utc).isoformat()
+            else:
+                job["status"] = "done"
+                job["ended_at"] = datetime.now(timezone.utc).isoformat()
 
     threading.Thread(target=run, daemon=True).start()
     return job_id
 
 
 def get_batch_job(job_id: str) -> dict | None:
-    return _batch_jobs.get(job_id)
+    with _batch_jobs_lock:
+        job = _batch_jobs.get(job_id)
+        if not job:
+            return None
+        return {**job, "results": list(job["results"])}
 
 
 def cancel_batch_job(job_id: str) -> bool:
-    job = _batch_jobs.get(job_id)
-    if job:
-        job["cancel"] = True
+    with _batch_jobs_lock:
+        job = _batch_jobs.get(job_id)
+        if not job:
+            return False
+        if job["status"] == "done":
+            return True
+        if job["status"] == "interrupted":
+            return True
+        job["cancel_requested"] = True
+        job["status"] = "interrupted"
+        job["results"] = []
+        job["interrupted_at"] = datetime.now(timezone.utc).isoformat()
         return True
-    return False
 
 
 def update_batch_decision(job_id: str, row_index: int, decision: str) -> bool:
-    job = _batch_jobs.get(job_id)
-    if not job:
+    with _batch_jobs_lock:
+        job = _batch_jobs.get(job_id)
+        if not job:
+            return False
+        for row in job["results"]:
+            if row.row_index == row_index:
+                row.decision = decision
+                return True
         return False
-    for row in job["results"]:
-        if row.row_index == row_index:
-            row.decision = decision
-            return True
-    return False
+
+
+def _candidate_key(*, code: str, ontology: str | None) -> str:
+    return f"{ontology or ''}::{code}".strip().lower()
+
+
+def _row_primary_to_alternative(row) -> AlternativeResult:
+    return AlternativeResult(
+        code=row.suggested_code,
+        term=row.suggested_term,
+        ontology=row.ontology,
+        confidence=row.confidence,
+        source=row.logic_type,
+        explanation=row.notes,
+    )
+
+
+def promote_batch_alternative(
+    job_id: str,
+    row_index: int,
+    alternative_code: str,
+    alternative_ontology: str | None = None,
+):
+    with _batch_jobs_lock:
+        job = _batch_jobs.get(job_id)
+        if not job:
+            return None
+
+        for row in job["results"]:
+            if row.row_index != row_index:
+                continue
+
+            selected = None
+            for alternative in row.alternatives:
+                if alternative.code != alternative_code:
+                    continue
+                if alternative_ontology is not None and alternative.ontology != alternative_ontology:
+                    continue
+                selected = alternative
+                break
+            if selected is None:
+                return None
+
+            demoted = _row_primary_to_alternative(row)
+            selected_key = _candidate_key(
+                code=selected.code,
+                ontology=selected.ontology,
+            )
+            demoted_key = _candidate_key(
+                code=demoted.code,
+                ontology=demoted.ontology,
+            )
+            should_demote_primary = row.suggested_code.upper().find("UNMAPPED") == -1
+
+            next_alternatives: list[AlternativeResult] = []
+            for alternative in row.alternatives:
+                key = _candidate_key(
+                    code=alternative.code,
+                    ontology=alternative.ontology,
+                )
+                if key == selected_key:
+                    if should_demote_primary:
+                        next_alternatives.append(demoted)
+                    continue
+                if should_demote_primary and key == demoted_key:
+                    continue
+                next_alternatives.append(alternative)
+
+            row.suggested_code = selected.code
+            row.suggested_term = selected.term
+            row.ontology = selected.ontology
+            row.confidence = selected.confidence
+            row.logic_type = selected.source or row.logic_type
+            row.notes = selected.explanation
+            row.decision = "pending"
+            row.alternatives = next_alternatives
+            return row
+
+        return None

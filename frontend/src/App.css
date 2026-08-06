@@ -195,10 +195,8 @@ body {
 
 /* ── Settings page ──────────────────────────────────────────────────── */
 .settings-page {
-  max-width: 860px;
   width: 100%;
-  margin: 0 auto;
-  padding: 2rem 2rem;
+  padding: 4rem;
 }
 
 .section-question {
@@ -554,10 +552,8 @@ code {
 
 /* ── Search page ────────────────────────────────────────────────────── */
 .search-page {
-  max-width: 860px;
   width: 100%;
-  margin: 0 auto;
-  padding: 2rem 2rem;
+  padding: 4rem;
 }
 
 .search-form-card {

@@ -10,6 +10,8 @@ class AppConfig(BaseModel):
     # Layer 2 — Candidate retrieval
     retrieval_mode: Literal["public", "local", "disabled"] = "public"
     bioportal_api_key: str | None = None  # in-memory only, not saved to disk
+    loinc_username: str | None = None
+    loinc_password: str | None = None  # in-memory only, never saved to disk
     sapbert_server_url: str = "http://localhost:8000"
     rag_auto_accept_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
 
@@ -31,9 +33,18 @@ class ConfigStatusResponse(BaseModel):
     status: LayerStatus
 
 
+class ComponentTestResult(BaseModel):
+    valid: bool
+    status: str
+    code: str
+    message: str
+
+
 class ConnectionTestResponse(BaseModel):
     success: bool
     message: str
+    candidate_retrieval: ComponentTestResult | None = None
+    ai_model: ComponentTestResult | None = None
     latency_ms: int | None = None
     available_models: list[str] | None = None
     validation_level: str | None = None  # 'api_key' | 'generation' | 'reachability'

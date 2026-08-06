@@ -9,6 +9,8 @@ export interface AppConfig {
   // Layer 2
   retrieval_mode: RetrievalMode;
   bioportal_api_key: string | null;
+  loinc_username: string | null;
+  loinc_password: string | null;
   sapbert_server_url: string;
   rag_auto_accept_threshold: number; // 0.0–1.0
 
@@ -30,6 +32,15 @@ export interface ConfigStatusResponse {
   status: LayerStatus;
 }
 
+export type ComponentTestStatus = 'valid' | 'invalid' | 'error' | 'not_required';
+
+export interface ComponentTestResult {
+  valid: boolean;
+  status: ComponentTestStatus;
+  code: string;
+  message: string;
+}
+
 export type ConnectionTestErrorType =
   | 'invalid_api_key'
   | 'subscription_required'
@@ -44,6 +55,8 @@ export type ConnectionTestErrorType =
 export interface ConnectionTestResponse {
   success: boolean;
   message: string;
+  candidate_retrieval?: ComponentTestResult | null;
+  ai_model?: ComponentTestResult | null;
   latency_ms?: number;
   available_models?: string[];
   validation_level?: 'api_key' | 'discovery' | 'reachability' | 'generation';

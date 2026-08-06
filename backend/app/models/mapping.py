@@ -89,6 +89,7 @@ class BatchRowResult(BaseModel):
     logic_type: str
     decision: str = "pending"  # "accepted" | "rejected" | "pending"
     alternatives: list[AlternativeResult] = []
+    notes: str | None = None
     configured_provider: str | None = None
     configured_model: str | None = None
     retrieval_mode: str | None = None
@@ -100,3 +101,4 @@ class BatchMappingResponse(BaseModel):
     completed: int
     results: list[BatchRowResult]
     status: str  # "running" | "done" | "cancelled"
+    error: str | None = None

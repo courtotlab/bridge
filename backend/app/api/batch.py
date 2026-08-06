@@ -40,7 +40,7 @@ def _parse_target_ontologies_json(raw: str | None) -> list[str] | None:
 
 
 @router.post("/upload-preview")
-async def upload_preview(file: UploadFile = File(...)):
+async def upload_preview(file: UploadFile = File(...)):  # noqa: B008
     contents = await file.read()
     filename = file.filename or ""
     try:
@@ -48,7 +48,7 @@ async def upload_preview(file: UploadFile = File(...)):
             df = pd.read_excel(io.BytesIO(contents))
         else:
             df = pd.read_csv(io.BytesIO(contents))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - return parse errors as 422 responses
         raise HTTPException(status_code=422, detail=f"Could not parse file: {exc}")
     return {
         "filename": filename,
@@ -60,7 +60,7 @@ async def upload_preview(file: UploadFile = File(...)):
 
 @router.post("/start", response_model=dict)
 async def start_batch(
-    file: UploadFile = File(...),
+    file: UploadFile = File(...),  # noqa: B008
     column_map_json: str = Form(...),
     clinical_area: str | None = Form(None),
     target_ontologies_json: str | None = Form(None),
@@ -77,7 +77,7 @@ async def start_batch(
             df = pd.read_excel(io.BytesIO(contents))
         else:
             df = pd.read_csv(io.BytesIO(contents))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - return parse errors as 422 responses
         raise HTTPException(status_code=422, detail=f"Could not parse file: {exc}")
 
     records = df.fillna("").to_dict(orient="records")
@@ -102,6 +102,7 @@ def get_status(job_id: str):
         completed=job["completed"],
         results=job["results"],
         status=job["status"],
+        error=job.get("error"),
     )
 
 

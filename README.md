@@ -93,19 +93,25 @@ The app opens on the Settings page. Complete these steps before running a search
    - Ollama Local is recommended for first run — free, no API key needed, runs on your machine
    - OpenAI, Anthropic, and Ollama Cloud require an API key
 
-2. **Click Test Connection**
+2. **Choose a candidate retrieval mode**
+   - Public ontology databases query public services such as EBI OLS4, LOINC, RxNav, and NIH Clinical Tables
+   - LOINC searches require a free LOINC account; enter your LOINC username and password in Settings when using public retrieval with LOINC
+   - Local semantic search and disabled retrieval do not require LOINC credentials
+
+3. **Click Test Connection**
    - For Ollama Local: confirms the server is reachable and the model is available
    - For cloud providers: validates the API key and populates the model dropdown
+   - For public retrieval: validates LOINC credentials when they are needed
 
-3. **Select a model** from the dropdown that appears after a successful test
+4. **Select a model** from the dropdown that appears after a successful test
 
-4. **Click Save Settings**
+5. **Click Save Settings**
 
-5. Layer 3 — LLM in the sidebar should turn green
+6. Layer 3 — LLM in the sidebar should turn green
 
-6. Go to **Term Search** to run your first mapping
+7. Go to **Term Search** to run your first mapping
 
-> API keys are held in memory only and must be re-entered after the backend restarts. All other settings are saved to `~/.ontology_mapper/config.json`.
+> API keys and passwords are held in memory only and must be re-entered after the backend restarts. Other settings, including the LOINC username, are saved to `~/.ontology_mapper/config.json`.
 
 ---
 
@@ -118,9 +124,13 @@ Uses scispaCy NER to extract the key biomedical concept from abbreviated field n
 
 **Layer 2 — Candidate Retrieval**
 Finds candidate ontology codes before asking the AI:
-- Public ontology databases — queries EBI OLS4, LOINC, RxNav, NIH Clinical Tables (no setup required)
+- Public ontology databases — queries EBI OLS4, LOINC, RxNav, NIH Clinical Tables
 - Local semantic search — uses a SapBERT+FAISS server for faster offline-capable retrieval
 - Disabled — AI maps directly without candidate lookup
+
+LOINC public retrieval requires a LOINC account. Create an account at https://loinc.org/join/, enter the username and password in Settings, then use the existing **Test Connection** button at the bottom of the Settings page. Public Candidate Retrieval is considered ready only after LOINC validation succeeds in the current backend session. If the backend restarts, or if the username/password changes, validate again.
+
+Non-LOINC public sources such as HPO, MONDO, NCIT, RxNorm, and ICD-10 do not require LOINC credentials. Interactive Bridge mapping does not silently use backend `LOINC_USERNAME` or `LOINC_PASSWORD` environment variables for LOINC retrieval; use the Settings page instead.
 
 **Layer 3 — AI Model**
 The LLM that selects the best ontology code from candidates. Supports Ollama Local, Ollama Cloud, OpenAI, and Anthropic.

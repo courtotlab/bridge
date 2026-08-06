@@ -2,15 +2,20 @@ import time
 
 import requests as _requests
 from fastapi import APIRouter, HTTPException
+from requests.auth import HTTPBasicAuth
 
 from app.models.config import (
     AppConfig,
+    ComponentTestResult,
     ConfigStatusResponse,
     ConnectionTestResponse,
     ModelsListResponse,
 )
 from app.storage.config_store import (
+    MASKED_SECRET_SENTINEL,
     cache_api_key,
+    cache_loinc_password,
+    current_public_retrieval_signature,
     get_sensitive,
     invalidate_connection_test,
     invalidate_retrieval_validation,
@@ -35,6 +40,10 @@ from app.utils.layer_status import compute_layer_status
 
 router = APIRouter()
 
+_LOINC_SEARCH_URL = "https://loinc.regenstrief.org/searchapi/loincs"
+_LOINC_TEST_QUERY = "glucose"
+_LOINC_TIMEOUT_SECONDS = 8
+
 
 # ── Config CRUD ───────────────────────────────────────────────────────────────
 
@@ -50,6 +59,12 @@ def post_config(config: AppConfig) -> AppConfig:
     invalidate_connection_test()
     invalidate_retrieval_validation()
     return load_config()
+
+
+@router.post("/retrieval-validation/invalidate")
+def post_retrieval_validation_invalidate() -> dict[str, bool]:
+    invalidate_retrieval_validation()
+    return {"ok": True}
 
 
 # ── Layer status ──────────────────────────────────────────────────────────────
@@ -97,7 +112,7 @@ def get_openai_models() -> ModelsListResponse:
         return ModelsListResponse(models=filter_openai_models(all_models))
     except _openai.AuthenticationError:
         return ModelsListResponse(models=[], error="Invalid OpenAI API key")
-    except Exception:
+    except Exception:  # noqa: BLE001 - live model listing falls back to defaults
         return ModelsListResponse(
             models=_OPENAI_FALLBACK, warning=_MODELS_FETCH_WARNING
         )
@@ -126,7 +141,7 @@ def get_anthropic_models() -> ModelsListResponse:
         return ModelsListResponse(models=model_ids)
     except _anthropic.AuthenticationError:
         return ModelsListResponse(models=[], error="Invalid Anthropic API key")
-    except Exception:
+    except Exception:  # noqa: BLE001 - live model listing falls back to defaults
         return ModelsListResponse(
             models=_ANTHROPIC_FALLBACK, warning=_MODELS_FETCH_WARNING
         )
@@ -173,46 +188,273 @@ def test_connection(body: AppConfig | None = None) -> ConnectionTestResponse:
     config = body if body is not None else load_config()
     print(
         f"[config/test] hit — provider={config.provider!r} model={config.model!r} "
-        f"api_key={'set' if config.api_key else 'not set'}",
+        f"api_key={'set' if config.api_key else 'not set'} "
+        f"loinc_password={'set' if config.loinc_password else 'not set'}",
         flush=True,
     )
     provider = config.provider
 
+    retrieval_result = _test_candidate_retrieval(config)
+
     if provider == "ollama":
-        result = _test_ollama(config)
+        ai_result = _test_ollama(config)
     elif provider == "ollama_cloud":
-        result = _test_ollama_cloud(config)
+        ai_result = _test_ollama_cloud(config)
     elif provider == "openai":
-        result = _test_openai(config)
+        ai_result = _test_openai(config)
     elif provider == "anthropic":
-        result = _test_anthropic(config)
+        ai_result = _test_anthropic(config)
     else:
         raise HTTPException(status_code=422, detail=f"Unknown provider: {provider}")
 
     set_connection_result(
-        result.success,
-        api_key_ok=result.api_key_ok,
-        model_ok=result.model_ok,
+        ai_result.success,
+        api_key_ok=ai_result.api_key_ok,
+        model_ok=ai_result.model_ok,
     )
-    if result.api_key_ok and config.api_key:
+    if ai_result.api_key_ok and config.api_key:
         cache_api_key(config.api_key)
 
-    if result.success:
-        sapbert_status, sapbert_message = _check_sapbert(config)
-        result.sapbert_status = sapbert_status
-        result.sapbert_message = sapbert_message
-        _apply_retrieval_validation(config, sapbert_status)
+    ai_component = _ai_component_from_response(ai_result)
+    aggregate_success = retrieval_result.valid and ai_component.valid
+    message = _aggregate_connection_message(
+        retrieval=retrieval_result,
+        ai=ai_component,
+        aggregate_success=aggregate_success,
+    )
 
-    return result
+    return ai_result.model_copy(
+        update={
+            "success": aggregate_success,
+            "message": message,
+            "candidate_retrieval": retrieval_result,
+            "ai_model": ai_component,
+        }
+    )
 
 
-def _apply_retrieval_validation(config: AppConfig, sapbert_status: str) -> None:
-    """Update Layer 2 state from SapBERT probe; LLM test alone does not validate public retrieval."""
+def _component_result(
+    *,
+    valid: bool,
+    status: str,
+    code: str,
+    message: str,
+) -> ComponentTestResult:
+    return ComponentTestResult(
+        valid=valid,
+        status=status,
+        code=code,
+        message=message,
+    )
+
+
+def _test_candidate_retrieval(config: AppConfig) -> ComponentTestResult:
     if config.retrieval_mode == "disabled":
-        return
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=True,
+            status="not_required",
+            code="retrieval_disabled",
+            message="Candidate retrieval is disabled; no connection test was required.",
+        )
     if config.retrieval_mode == "local":
-        set_retrieval_result(sapbert_status == "ok")
-    # public: no automatic ok — remains untested until a dedicated retrieval check exists
+        sapbert_status, sapbert_message = _check_sapbert(config)
+        passed = sapbert_status == "ok"
+        set_retrieval_result(passed)
+        return _component_result(
+            valid=passed,
+            status="valid" if passed else "error",
+            code="sapbert_reachable" if passed else "sapbert_unreachable",
+            message=sapbert_message or "SapBERT server reachable.",
+        )
+    if config.retrieval_mode == "public":
+        return _test_public_retrieval(config)
+    invalidate_retrieval_validation()
+    return _component_result(
+        valid=False,
+        status="error",
+        code="retrieval_mode_unknown",
+        message="Candidate retrieval mode is not recognized.",
+    )
+
+
+def _resolve_loinc_credentials(config: AppConfig) -> tuple[str | None, str | None]:
+    username = config.loinc_username.strip() if config.loinc_username else None
+    password = config.loinc_password
+    if password is None or password == MASKED_SECRET_SENTINEL:
+        password = get_sensitive("loinc_password")
+    return username, password
+
+
+def _test_public_retrieval(config: AppConfig) -> ComponentTestResult:
+    username, password = _resolve_loinc_credentials(config)
+    if not username or not password:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="invalid",
+            code="loinc_credentials_missing",
+            message="Enter a LOINC username and password before testing the connection.",
+        )
+
+    try:
+        resp = _requests.get(
+            _LOINC_SEARCH_URL,
+            params={"query": _LOINC_TEST_QUERY, "rows": "1", "offset": "0"},
+            auth=HTTPBasicAuth(username, password),
+            timeout=_LOINC_TIMEOUT_SECONDS,
+        )
+    except _requests.Timeout:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_timeout",
+            message="Could not reach the LOINC service. Try again.",
+        )
+    except _requests.ConnectionError:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_unavailable",
+            message="Could not reach the LOINC service. Try again.",
+        )
+    except _requests.RequestException:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_unavailable",
+            message="Could not reach the LOINC service. Try again.",
+        )
+
+    if resp.status_code in (401, 403):
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="invalid",
+            code="loinc_credentials_invalid",
+            message="The LOINC username or password is incorrect.",
+        )
+    if resp.status_code == 429:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_rate_limited",
+            message="The LOINC service is temporarily limiting requests. Try again later.",
+        )
+    if 500 <= resp.status_code < 600:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_unavailable",
+            message="Could not reach the LOINC service. Try again.",
+        )
+    if not 200 <= resp.status_code < 300:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_unexpected_response",
+            message="The LOINC service returned an unexpected response.",
+        )
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_unexpected_response",
+            message="The LOINC service returned an unexpected response.",
+        )
+    if not _loinc_response_has_expected_structure(payload):
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_unexpected_response",
+            message="The LOINC service returned an unexpected response.",
+        )
+
+    config_for_signature = config.model_copy(
+        update={"loinc_username": username, "loinc_password": password}
+    )
+    cache_loinc_password(password)
+    set_retrieval_result(
+        True,
+        signature=current_public_retrieval_signature(config_for_signature),
+    )
+    return _component_result(
+        valid=True,
+        status="valid",
+        code="loinc_credentials_valid",
+        message="LOINC credentials are valid.",
+    )
+
+
+def _loinc_response_has_expected_structure(payload: object) -> bool:
+    if isinstance(payload, list):
+        return True
+    if not isinstance(payload, dict):
+        return False
+    for key in (
+        "results",
+        "Results",
+        "loincs",
+        "docs",
+        "items",
+        "content",
+        "data",
+    ):
+        if key in payload and isinstance(payload[key], list | dict):
+            return True
+    for key in ("response", "Response"):
+        value = payload.get(key)
+        if isinstance(value, dict) and _loinc_response_has_expected_structure(value):
+            return True
+    return False
+
+
+def _ai_component_from_response(result: ConnectionTestResponse) -> ComponentTestResult:
+    if result.success:
+        return _component_result(
+            valid=True,
+            status="valid",
+            code="provider_connection_valid",
+            message=result.message,
+        )
+    if result.api_key_ok is False:
+        status = "invalid"
+    elif result.error_type in {"network_error", "unknown"}:
+        status = "error"
+    else:
+        status = "invalid"
+    return _component_result(
+        valid=False,
+        status=status,
+        code=result.error_type or "provider_connection_failed",
+        message=result.message,
+    )
+
+
+def _aggregate_connection_message(
+    *,
+    retrieval: ComponentTestResult,
+    ai: ComponentTestResult,
+    aggregate_success: bool,
+) -> str:
+    if aggregate_success:
+        return "Connection test succeeded."
+    if not retrieval.valid and not ai.valid:
+        return f"{retrieval.message} {ai.message}"
+    if not retrieval.valid:
+        return retrieval.message
+    return ai.message
 
 
 def _check_sapbert(config: AppConfig) -> tuple[str, str | None]:
@@ -224,7 +466,7 @@ def _check_sapbert(config: AppConfig) -> tuple[str, str | None]:
             resp = _requests.get(base + path, timeout=5)
             if resp.status_code < 400:
                 return "ok", None
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - try the next SapBERT URL shape
             pass
     msg = f"Could not reach SapBERT server at {base} — is it running?"
     return "unreachable", msg
@@ -411,7 +653,7 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
             f"models_found={len(available)}: {models_preview}",
             flush=True,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - normalize local Ollama failures to test response
         return ConnectionTestResponse(
             success=False,
             message=(
@@ -447,7 +689,7 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
             ps_models = ps_resp.json().get("models", [])
             if ps_models:
                 resident_model = ps_models[0]["name"]
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - /api/ps is best-effort metadata
         pass
     print(
         f"[config/test] ollama local /api/ps ← loaded={resident_model!r}",
@@ -498,7 +740,7 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
             warning="inference_timeout",
             resident_model=resident_model,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - normalize local Ollama failures to test response
         return ConnectionTestResponse(
             success=False,
             message=translate(exc, base_url),
@@ -519,7 +761,7 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
     if not chat_resp.ok:
         try:
             body_msg = chat_resp.json().get("error") or chat_resp.text
-        except Exception:
+        except Exception:  # noqa: BLE001 - fallback to raw response text
             body_msg = chat_resp.text
         return ConnectionTestResponse(
             success=False,
@@ -553,7 +795,7 @@ def _ollama_cloud_base(config: AppConfig) -> str:
         from urllib.parse import urlparse
 
         host = urlparse(raw).hostname or ""
-    except Exception:
+    except Exception:  # noqa: BLE001 - invalid URLs fall back to local-host behavior
         host = ""
     if not raw or host in _LOCAL_HOSTS:
         return _OLLAMA_CLOUD_BASE
@@ -603,7 +845,7 @@ def _ollama_cloud_fetch_tags(
             model_ok=False,
             error_type="unknown",
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - normalize cloud discovery failures
         return [], ConnectionTestResponse(
             success=False,
             message=translate(exc, base),
@@ -706,7 +948,7 @@ def _test_ollama_cloud(config: AppConfig) -> ConnectionTestResponse:
             available_models=available,
             error_type="model_unavailable",
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - normalize cloud chat failures
         return model_failure_response(
             message=translate(exc, base),
             available_models=available,
@@ -756,7 +998,7 @@ def _test_openai(config: AppConfig) -> ConnectionTestResponse:
             flush=True,
         )
         return invalid_api_key_response("openai")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - normalize OpenAI discovery failures
         print(
             f"[config/test] openai models.list ← error  {type(exc).__name__}",
             flush=True,
@@ -805,7 +1047,7 @@ def _test_openai(config: AppConfig) -> ConnectionTestResponse:
         )
         text = response.content or ""
         print(f"[config/test] openai chat ← ok  response={text[:80]!r}", flush=True)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - normalize OpenAI chat failures
         print(f"[config/test] openai chat ← error  {type(exc).__name__}", flush=True)
         return openai_chat_error_response(exc.__cause__ or exc, available)
 
@@ -859,7 +1101,7 @@ def _test_anthropic(config: AppConfig) -> ConnectionTestResponse:
             flush=True,
         )
         return invalid_api_key_response("anthropic")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - normalize Anthropic discovery failures
         print(
             f"[config/test] anthropic models.list ← error  {type(exc).__name__}",
             flush=True,
@@ -891,7 +1133,7 @@ def _test_anthropic(config: AppConfig) -> ConnectionTestResponse:
         )
         text = response.content[0].text if response.content else ""
         print(f"[config/test] anthropic chat ← ok  response={text[:80]!r}", flush=True)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - normalize Anthropic chat failures
         print(f"[config/test] anthropic chat ← error  {type(exc).__name__}", flush=True)
         return anthropic_chat_error_response(exc, available)
 

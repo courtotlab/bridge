@@ -3,25 +3,28 @@
 import pytest
 import requests as _requests
 
+from app.api import config as config_api
 from app.api.config import (
+    _LOINC_SEARCH_URL,
     _OLLAMA_CLOUD_BASE,
     _ollama_cloud_base,
     _test_ollama,
     _test_ollama_cloud,
+    _test_public_retrieval,
 )
-from app.models.config import AppConfig
-
+from app.models.config import AppConfig, ConnectionTestResponse
+from app.storage import config_store
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
 def _cfg(**kwargs) -> AppConfig:
-    defaults = dict(
-        provider="ollama_cloud",
-        model="llama3.2",
-        base_url="http://localhost:11434",
-        api_key="sk-test1234",
-    )
+    defaults = {
+        "provider": "ollama_cloud",
+        "model": "llama3.2",
+        "base_url": "http://localhost:11434",
+        "api_key": "sk-test1234",
+    }
     defaults.update(kwargs)
     return AppConfig(**defaults)
 
@@ -47,6 +50,21 @@ def _mock_chat_ok():
     resp = _requests.Response()
     resp.status_code = 200
     resp._content = b'{"message": {"content": "OK"}}'
+    return resp
+
+
+def _mock_loinc_response(status_code: int = 200, json_data=None, text: str = ""):
+    resp = _requests.Response()
+    resp.status_code = status_code
+    resp._content = (
+        text.encode()
+        if text
+        else (
+            b'{"results":[{"loincNum":"2345-7","longCommonName":"Glucose"}]}'
+            if json_data is None
+            else json_data
+        )
+    )
     return resp
 
 
@@ -238,3 +256,293 @@ class TestOllamaLocal:
         mocker.patch("app.api.config._requests.get", return_value=_mock_tags_ok())
         result = _test_ollama(AppConfig(provider="ollama", model="llama3.2"))
         assert result.validation_level is None
+
+
+# ── Candidate retrieval component tests ───────────────────────────────────────
+
+
+class TestPublicLoincValidation:
+    def setup_method(self):
+        config_store.invalidate_retrieval_validation()
+        config_store.save_config(AppConfig(loinc_password=None))
+
+    def teardown_method(self):
+        config_store.invalidate_retrieval_validation()
+        config_store.save_config(AppConfig(loinc_password=None))
+
+    def test_valid_credentials(self, mocker):
+        mock_get = mocker.patch(
+            "app.api.config._requests.get",
+            return_value=_mock_loinc_response(),
+        )
+        result = _test_public_retrieval(
+            AppConfig(
+                retrieval_mode="public",
+                loinc_username=" loinc-user ",
+                loinc_password="loinc-secret",
+            )
+        )
+
+        assert result.valid is True
+        assert result.status == "valid"
+        assert result.code == "loinc_credentials_valid"
+        assert result.message == "LOINC credentials are valid."
+        url = mock_get.call_args.args[0]
+        kwargs = mock_get.call_args.kwargs
+        assert url == _LOINC_SEARCH_URL
+        assert kwargs["params"] == {"query": "glucose", "rows": "1", "offset": "0"}
+        assert kwargs["auth"].username == "loinc-user"
+        assert kwargs["auth"].password == "loinc-secret"
+        assert config_store.get_retrieval_validation() == "ok"
+
+    def test_missing_username_or_password(self, mocker):
+        mock_get = mocker.patch("app.api.config._requests.get")
+        result = _test_public_retrieval(
+            AppConfig(retrieval_mode="public", loinc_username="user")
+        )
+
+        mock_get.assert_not_called()
+        assert result.valid is False
+        assert result.status == "invalid"
+        assert result.code == "loinc_credentials_missing"
+        assert config_store.get_retrieval_validation() == "untested"
+
+    @pytest.mark.parametrize("status_code", [401, 403])
+    def test_invalid_credentials(self, mocker, status_code):
+        mocker.patch(
+            "app.api.config._requests.get",
+            return_value=_mock_loinc_response(status_code=status_code, text="nope"),
+        )
+        result = _test_public_retrieval(
+            AppConfig(
+                retrieval_mode="public",
+                loinc_username="user",
+                loinc_password="bad",
+            )
+        )
+
+        assert result.valid is False
+        assert result.status == "invalid"
+        assert result.code == "loinc_credentials_invalid"
+        assert result.message == "The LOINC username or password is incorrect."
+        assert config_store.get_retrieval_validation() == "untested"
+
+    def test_rate_limited(self, mocker):
+        mocker.patch(
+            "app.api.config._requests.get",
+            return_value=_mock_loinc_response(status_code=429, text="slow down"),
+        )
+        result = _test_public_retrieval(
+            AppConfig(
+                retrieval_mode="public",
+                loinc_username="user",
+                loinc_password="secret",
+            )
+        )
+
+        assert result.valid is False
+        assert result.code == "loinc_rate_limited"
+        assert "temporarily limiting" in result.message
+
+    def test_timeout(self, mocker):
+        mocker.patch(
+            "app.api.config._requests.get",
+            side_effect=_requests.Timeout("timed out"),
+        )
+        result = _test_public_retrieval(
+            AppConfig(
+                retrieval_mode="public",
+                loinc_username="user",
+                loinc_password="secret",
+            )
+        )
+
+        assert result.valid is False
+        assert result.code == "loinc_timeout"
+        assert result.message == "Could not reach the LOINC service. Try again."
+
+    def test_connection_failure(self, mocker):
+        mocker.patch(
+            "app.api.config._requests.get",
+            side_effect=_requests.ConnectionError("dns"),
+        )
+        result = _test_public_retrieval(
+            AppConfig(
+                retrieval_mode="public",
+                loinc_username="user",
+                loinc_password="secret",
+            )
+        )
+
+        assert result.valid is False
+        assert result.code == "loinc_unavailable"
+        assert result.message == "Could not reach the LOINC service. Try again."
+
+    def test_upstream_5xx(self, mocker):
+        mocker.patch(
+            "app.api.config._requests.get",
+            return_value=_mock_loinc_response(status_code=503, text="down"),
+        )
+        result = _test_public_retrieval(
+            AppConfig(
+                retrieval_mode="public",
+                loinc_username="user",
+                loinc_password="secret",
+            )
+        )
+
+        assert result.valid is False
+        assert result.code == "loinc_unavailable"
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            _mock_loinc_response(json_data=b"{}"),
+            _mock_loinc_response(text="not json"),
+        ],
+    )
+    def test_malformed_or_unexpected_response(self, mocker, response):
+        mocker.patch("app.api.config._requests.get", return_value=response)
+        result = _test_public_retrieval(
+            AppConfig(
+                retrieval_mode="public",
+                loinc_username="user",
+                loinc_password="secret",
+            )
+        )
+
+        assert result.valid is False
+        assert result.code == "loinc_unexpected_response"
+        assert result.message == "The LOINC service returned an unexpected response."
+
+    def test_masked_sentinel_resolves_to_memory_password(self, mocker):
+        config_store.save_config(AppConfig(loinc_password="memory-secret"))
+        mock_get = mocker.patch(
+            "app.api.config._requests.get",
+            return_value=_mock_loinc_response(),
+        )
+
+        result = _test_public_retrieval(
+            AppConfig(
+                retrieval_mode="public",
+                loinc_username="user",
+                loinc_password=config_store.MASKED_SECRET_SENTINEL,
+            )
+        )
+
+        assert result.valid is True
+        assert mock_get.call_args.kwargs["auth"].password == "memory-secret"
+
+    def test_password_is_not_logged_or_returned(self, mocker, capsys):
+        mocker.patch(
+            "app.api.config._requests.get",
+            return_value=_mock_loinc_response(),
+        )
+        result = _test_public_retrieval(
+            AppConfig(
+                retrieval_mode="public",
+                loinc_username="user",
+                loinc_password="loinc-secret",
+            )
+        )
+        captured = capsys.readouterr()
+
+        assert "loinc-secret" not in result.model_dump_json()
+        assert "loinc-secret" not in captured.out
+        assert "loinc-secret" not in captured.err
+
+
+class TestConnectionComponentIndependence:
+    def setup_method(self):
+        config_store.invalidate_connection_test()
+        config_store.invalidate_retrieval_validation()
+
+    def teardown_method(self):
+        config_store.invalidate_connection_test()
+        config_store.invalidate_retrieval_validation()
+
+    def test_candidate_failure_does_not_prevent_ai_success(self, mocker):
+        mocker.patch(
+            "app.api.config._test_openai"
+        ).return_value = ConnectionTestResponse(
+            success=True, message="OpenAI OK.", api_key_ok=True, model_ok=True
+        )
+        result = config_api.test_connection(
+            AppConfig(
+                provider="openai",
+                model="gpt-4o",
+                api_key="sk-test",
+                retrieval_mode="public",
+            )
+        )
+
+        assert result.success is False
+        assert result.candidate_retrieval.code == "loinc_credentials_missing"
+        assert result.ai_model.valid is True
+        assert result.model_ok is True
+
+    def test_ai_failure_does_not_prevent_candidate_success(self, mocker):
+        mocker.patch(
+            "app.api.config._requests.get",
+            return_value=_mock_loinc_response(),
+        )
+        mocker.patch(
+            "app.api.config._test_openai"
+        ).return_value = ConnectionTestResponse(
+            success=False,
+            message="OpenAI failed.",
+            api_key_ok=False,
+            model_ok=None,
+            error_type="invalid_api_key",
+        )
+        result = config_api.test_connection(
+            AppConfig(
+                provider="openai",
+                model="gpt-4o",
+                api_key="bad",
+                retrieval_mode="public",
+                loinc_username="user",
+                loinc_password="secret",
+            )
+        )
+
+        assert result.success is False
+        assert result.candidate_retrieval.valid is True
+        assert result.ai_model.valid is False
+        assert config_store.get_retrieval_validation() == "ok"
+
+    def test_local_mode_does_not_contact_loinc(self, mocker):
+        mock_loinc = mocker.patch("app.api.config._test_public_retrieval")
+        mocker.patch("app.api.config._check_sapbert", return_value=("ok", None))
+        mocker.patch(
+            "app.api.config._test_ollama"
+        ).return_value = ConnectionTestResponse(
+            success=True, message="Ollama OK.", model_ok=True
+        )
+
+        result = config_api.test_connection(
+            AppConfig(retrieval_mode="local", provider="ollama")
+        )
+
+        mock_loinc.assert_not_called()
+        assert result.candidate_retrieval.code == "sapbert_reachable"
+        assert result.candidate_retrieval.valid is True
+
+    def test_disabled_mode_contacts_neither_retrieval_service(self, mocker):
+        mock_loinc = mocker.patch("app.api.config._test_public_retrieval")
+        mock_sapbert = mocker.patch("app.api.config._check_sapbert")
+        mocker.patch(
+            "app.api.config._test_ollama"
+        ).return_value = ConnectionTestResponse(
+            success=True, message="Ollama OK.", model_ok=True
+        )
+
+        result = config_api.test_connection(
+            AppConfig(retrieval_mode="disabled", provider="ollama")
+        )
+
+        mock_loinc.assert_not_called()
+        mock_sapbert.assert_not_called()
+        assert result.success is True
+        assert result.candidate_retrieval.code == "retrieval_disabled"
+        assert result.candidate_retrieval.status == "not_required"

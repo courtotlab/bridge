@@ -8,7 +8,11 @@ from app.models.mapping import (
     SingleMappingRequest,
     SingleMappingResponse,
 )
-from app.storage.config_store import get_sensitive, load_config
+from app.storage.config_store import (
+    get_sensitive,
+    get_validated_loinc_credentials,
+    load_config,
+)
 from app.utils.ontology import normalize_target_ontologies
 
 # ── Batch job store ──────────────────────────────────────────────────────────
@@ -23,6 +27,12 @@ _LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0"}
 _PLANNED_RAG_TOP_K = 5
 _PLANNED_MAX_CANDIDATES = 10
 _PLANNED_MAX_ALTERNATIVES = 5
+_LOINC_CREDENTIALS_REQUIRED_MESSAGE = (
+    "LOINC credentials must be validated in Settings before running public LOINC retrieval."
+)
+_LOINC_OMITTED_WARNING = (
+    "LOINC retrieval was skipped because LOINC credentials have not been validated in Settings."
+)
 
 # Fix 2: frontend option values (lowercase, "/" → "_") → library entity_type
 _CLINICAL_AREA_MAP: dict[str, str | None] = {
@@ -89,6 +99,33 @@ def _normalize_for_comparison(o: str | None) -> str:
     return _ONTOLOGY_COMPARE_NORMALIZE.get(upper, upper)
 
 
+def _is_loinc_ontology(ontology: str | None) -> bool:
+    return _normalize_for_comparison(ontology) == "LOINC"
+
+
+def _filter_unavailable_loinc_ontology(
+    ontologies: list[str] | None,
+    *,
+    has_validated_loinc_credentials: bool,
+) -> tuple[list[str] | None, str | None]:
+    if has_validated_loinc_credentials or not ontologies:
+        return ontologies, None
+    non_loinc = [ontology for ontology in ontologies if not _is_loinc_ontology(ontology)]
+    if len(non_loinc) == len(ontologies):
+        return ontologies, None
+    if not non_loinc:
+        raise ValueError(_LOINC_CREDENTIALS_REQUIRED_MESSAGE)
+    return non_loinc, _LOINC_OMITTED_WARNING
+
+
+def _append_mapping_warning(notes: str | None, warning: str | None) -> str | None:
+    if not warning:
+        return notes
+    if notes:
+        return f"{notes} {warning}"
+    return warning
+
+
 def _infer_ontology_from_code(code: str) -> str:
     """Derive a canonical ontology label from a CURIE prefix."""
     if not code or ":" not in code:
@@ -153,10 +190,56 @@ def _build_llm_provider(config):
     )
 
 
-def _build_mapper_kwargs(config, *, ontologies: list[str] | None = None) -> dict:
+def _build_public_retriever(config):
+    from llm_ontology_mapper import (  # type: ignore[import-untyped]
+        PublicOntologyRetriever,
+        PublicRetrievalError,
+    )
+    from llm_ontology_mapper.search_tools import (  # type: ignore[import-untyped]
+        SearchTools,
+    )
+
+    credentials = get_validated_loinc_credentials(config)
+    loinc_username, loinc_password = credentials or ("", "")
+
+    class BridgePublicOntologyRetriever(PublicOntologyRetriever):
+        def _call_route(self, query: str, ontology: str, top_k: int):
+            if _is_loinc_ontology(ontology) and credentials is None:
+                raise PublicRetrievalError(_LOINC_CREDENTIALS_REQUIRED_MESSAGE)
+            return super()._call_route(query, ontology, top_k)
+
+    retriever_cls = PublicOntologyRetriever if credentials else BridgePublicOntologyRetriever
+    return retriever_cls(
+        search_tools=SearchTools(
+            loinc_username=loinc_username,
+            loinc_password=loinc_password,
+        )
+    )
+
+
+def _build_planned_pipeline(config, *, local_retriever=None):
+    from llm_ontology_mapper import PlannedPipeline  # type: ignore[import-untyped]
+
+    llm_provider = _build_llm_provider(config)
+    return llm_provider, PlannedPipeline(
+        provider=llm_provider,
+        public_retriever=_build_public_retriever(config),
+        local_retriever=local_retriever,
+    )
+
+
+def _build_mapper_kwargs(config, *, ontologies: list[str] | None = None) -> tuple[dict, str | None]:
     """Build OntologyMapper constructor kwargs for the planned pipeline."""
+    loinc_credentials = get_validated_loinc_credentials(config)
+    if config.retrieval_mode == "public":
+        effective_ontologies, warning = _filter_unavailable_loinc_ontology(
+            ontologies,
+            has_validated_loinc_credentials=loinc_credentials is not None,
+        )
+    else:
+        effective_ontologies, warning = ontologies, None
     kwargs: dict = {
-        "ontologies": ontologies,
+        "ontologies": effective_ontologies,
         "use_planned_pipeline": True,
         "retrieval_mode": config.retrieval_mode,
         **_planned_limit_kwargs(config),
@@ -165,18 +248,23 @@ def _build_mapper_kwargs(config, *, ontologies: list[str] | None = None) -> dict
     if config.retrieval_mode == "local":
         from llm_ontology_mapper import (  # type: ignore[import-untyped]
             LocalSemanticRetriever,
-            PlannedPipeline,
         )
 
-        llm_provider = _build_llm_provider(config)
-        kwargs["llm_provider"] = llm_provider
-        kwargs["planned_pipeline"] = PlannedPipeline(
-            provider=llm_provider,
+        llm_provider, planned_pipeline = _build_planned_pipeline(
+            config,
             local_retriever=LocalSemanticRetriever(
                 sapbert_url=config.sapbert_server_url,
             ),
         )
-        return kwargs
+        kwargs["llm_provider"] = llm_provider
+        kwargs["planned_pipeline"] = planned_pipeline
+        return kwargs, warning
+
+    if config.retrieval_mode in {"public", "disabled"}:
+        llm_provider, planned_pipeline = _build_planned_pipeline(config)
+        kwargs["llm_provider"] = llm_provider
+        kwargs["planned_pipeline"] = planned_pipeline
+        return kwargs, warning
 
     kwargs.update(
         {
@@ -186,7 +274,7 @@ def _build_mapper_kwargs(config, *, ontologies: list[str] | None = None) -> dict
             **_provider_extra_kwargs(config),
         }
     )
-    return kwargs
+    return kwargs, warning
 
 
 def _bridge_mapping_values(result) -> tuple[str, str, str]:
@@ -228,7 +316,10 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
             f"'{config.provider}' → '{normalised_provider}'"
         )
 
-    mapper_kwargs = _build_mapper_kwargs(config, ontologies=request.target_ontologies)
+    mapper_kwargs, mapping_warning = _build_mapper_kwargs(
+        config,
+        ontologies=request.target_ontologies,
+    )
     if "base_url" in mapper_kwargs:
         print(
             f"[mapper_service] base_url: config={config.base_url!r} "
@@ -281,7 +372,7 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
         ontology=ontology,
         confidence=result.confidence,
         logic_type=str(logic_type_val),
-        notes=result.notes,
+        notes=_append_mapping_warning(result.notes, mapping_warning),
         alternatives=alternatives,
         metadata=metadata,
         configured_provider=config.provider,
@@ -323,12 +414,15 @@ def start_batch_job(
             _validate_config()
             config = load_config()
             mapped_entity_type = _map_entity_type(clinical_area)
-            mapper = OntologyMapper(
-                **_build_mapper_kwargs(config, ontologies=normalized_target_ontologies)
+            mapper_kwargs, mapping_warning = _build_mapper_kwargs(
+                config,
+                ontologies=normalized_target_ontologies,
             )
-        except Exception as exc:
+            mapper = OntologyMapper(**mapper_kwargs)
+        except Exception as exc:  # noqa: BLE001 - preserve batch row failure handling
             logger.error("Batch job %s failed during initialisation: %s", job_id, exc)
             _batch_jobs[job_id]["status"] = "failed"
+            _batch_jobs[job_id]["error"] = str(exc)
             return
 
         job = _batch_jobs[job_id]
@@ -400,8 +494,12 @@ def start_batch_job(
                     configured_provider=config.provider,
                     configured_model=config.model,
                     retrieval_mode=config.retrieval_mode,
+                    notes=_append_mapping_warning(
+                        getattr(result, "notes", None),
+                        mapping_warning,
+                    ),
                 )
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - preserve per-row batch errors
                 row = BatchRowResult(
                     row_index=i,
                     field_name=field_name,
@@ -412,6 +510,7 @@ def start_batch_job(
                     confidence=0.0,
                     logic_type="llm",
                     decision="rejected",
+                    notes=str(exc) or type(exc).__name__,
                 )
             job["results"].append(row)
             job["completed"] = i + 1

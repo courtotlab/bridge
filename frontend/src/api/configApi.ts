@@ -11,6 +11,10 @@ export async function saveConfig(config: AppConfig): Promise<AppConfig> {
   return data;
 }
 
+export async function invalidateRetrievalValidation(): Promise<void> {
+  await client.post('/config/retrieval-validation/invalidate');
+}
+
 export async function testConnection(config: AppConfig): Promise<ConnectionTestResponse> {
   const url = `${client.defaults.baseURL}/config/test`;
   console.log(

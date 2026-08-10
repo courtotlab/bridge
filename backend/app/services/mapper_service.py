@@ -27,7 +27,7 @@ _CLOUD_PROVIDERS = {"openai", "anthropic", "ollama_cloud"}
 _OLLAMA_PROVIDERS = {"ollama", "ollama_cloud"}
 _OLLAMA_CLOUD_BASE = "https://ollama.com"
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0"}
-_PLANNED_RAG_TOP_K = 5
+_PLANNED_RAG_TOP_K = 15
 _PLANNED_MAX_CANDIDATES = 10
 _PLANNED_MAX_ALTERNATIVES = 5
 _LOINC_CREDENTIALS_REQUIRED_MESSAGE = (
@@ -427,7 +427,10 @@ def start_batch_job(
         }
 
     def run():
-        from llm_ontology_mapper import OntologyMapper  # type: ignore[import-untyped]
+        from llm_ontology_mapper import (  # type: ignore[import-untyped]
+            OntologyMapper,
+            PlannedPipelineError,
+        )
 
         from app.models.mapping import BatchRowResult
 
@@ -581,6 +584,24 @@ def start_batch_job(
                         getattr(result, "notes", None),
                         mapping_warning,
                     ),
+                )
+            except PlannedPipelineError as exc:
+                logger.exception(
+                    "Batch job %s row %s planned pipeline error",
+                    job_id,
+                    i,
+                )
+                row = BatchRowResult(
+                    row_index=i,
+                    field_name=field_name,
+                    label=effective_label,
+                    suggested_code="UNMAPPED",
+                    suggested_term=str(exc) or type(exc).__name__,
+                    ontology="",
+                    confidence=0.0,
+                    logic_type="llm",
+                    decision="rejected",
+                    notes=str(exc) or type(exc).__name__,
                 )
             except Exception as exc:  # noqa: BLE001 - preserve per-row batch errors
                 row = BatchRowResult(

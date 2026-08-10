@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 from fastapi import HTTPException
 from llm_ontology_mapper import (
@@ -56,3 +58,24 @@ def test_wrapped_local_retrieval_error_maps_to_503(monkeypatch):
 
     assert raised.value.status_code == 503
     assert raised.value.detail == "local retrieval failed during planned mapping"
+
+
+def test_wrapped_public_retrieval_error_logs_chained_cause(monkeypatch, caplog):
+    def raise_chained_error(_request):
+        try:
+            raise PublicRetrievalError("specific root cause")
+        except PublicRetrievalError as exc:
+            raise PlannedPipelineError(
+                "public retrieval failed during planned mapping"
+            ) from exc
+
+    monkeypatch.setattr(mapping_api, "map_single_term", raise_chained_error)
+    caplog.set_level(logging.ERROR, logger=mapping_api.__name__)
+
+    with pytest.raises(HTTPException) as raised:
+        mapping_api.map_single(SingleMappingRequest(source_term="x"))
+
+    assert raised.value.status_code == 503
+    assert raised.value.detail == "public retrieval failed during planned mapping"
+    assert "public retrieval failed during planned mapping" in caplog.text
+    assert "specific root cause" in caplog.text

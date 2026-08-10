@@ -1,8 +1,10 @@
+import logging
 from types import SimpleNamespace
 from typing import ClassVar
 from unittest.mock import MagicMock
 
 import pytest
+from llm_ontology_mapper import PlannedPipelineError, PublicRetrievalError
 
 from app.models.config import AppConfig
 from app.models.mapping import SingleMappingRequest
@@ -101,7 +103,7 @@ def test_single_mapping_constructs_planned_mapper_for_public_and_disabled(
     assert kwargs["ontologies"] is None
     assert kwargs["use_planned_pipeline"] is True
     assert kwargs["retrieval_mode"] == mode
-    assert kwargs["rag_top_k"] == 5
+    assert kwargs["rag_top_k"] == 15
     assert kwargs["max_candidates"] == 10
     assert kwargs["max_alternatives"] == 5
     assert kwargs["llm_provider"] is deps.provider
@@ -628,6 +630,9 @@ def test_batch_mapping_runs_with_planned_mapper_and_normalizes_unmapped(monkeypa
     kwargs = mapper_cls.call_args.kwargs
     assert kwargs["ontologies"] is None
     assert kwargs["use_planned_pipeline"] is True
+    assert kwargs["rag_top_k"] == 15
+    assert kwargs["max_candidates"] == 10
+    assert kwargs["max_alternatives"] == 5
     assert "planned_pipeline" in kwargs
     assert "use_rag" not in kwargs
     assert "ontology_retriever" not in kwargs
@@ -753,6 +758,44 @@ def test_batch_failed_row_keeps_exception_message(monkeypatch):
     row = mapper_service.get_batch_job(job_id)["results"][0]
     assert row.suggested_code == "UNMAPPED"
     assert row.suggested_term == "planner exploded"
+
+
+def test_batch_planned_pipeline_error_logs_chained_cause(monkeypatch, caplog):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    def raise_chained_error(*_args, **_kwargs):
+        try:
+            raise PublicRetrievalError("specific root cause")
+        except PublicRetrievalError as exc:
+            raise PlannedPipelineError(
+                "public retrieval failed during planned mapping"
+            ) from exc
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.side_effect = raise_chained_error
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+    caplog.set_level(logging.ERROR, logger=mapper_service.__name__)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "x"}],
+        column_map={"field_name": "field_name"},
+        clinical_area=None,
+        target_ontologies=None,
+        auto_accept_threshold=0.85,
+    )
+
+    row = mapper_service.get_batch_job(job_id)["results"][0]
+    assert row.suggested_code == "UNMAPPED"
+    assert row.suggested_term == "public retrieval failed during planned mapping"
+    assert "public retrieval failed during planned mapping" in caplog.text
+    assert "specific root cause" in caplog.text
 
 
 def test_batch_mapping_reuses_one_mapper_with_normalized_target_ontologies(monkeypatch):

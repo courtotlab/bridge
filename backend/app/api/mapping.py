@@ -49,9 +49,9 @@ def map_single(request: SingleMappingRequest) -> SingleMappingResponse:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except PlannedPipelineError as exc:
         if isinstance(exc.__cause__, (PublicRetrievalError, LocalRetrievalError)):
-            logger.error("[map/single] planned retrieval error: %s", exc)
+            logger.exception("[map/single] planned retrieval error")
             raise HTTPException(status_code=503, detail=str(exc)) from exc
-        logger.error("[map/single] planned pipeline error: %s", exc)
+        logger.exception("[map/single] planned pipeline error")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     except (
         QueryPlanningError,

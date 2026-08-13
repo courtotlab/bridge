@@ -82,6 +82,16 @@ function initialColumnMap(): Record<string, string | null> {
 
 type Phase = 'upload' | 'running' | 'review' | 'exported';
 
+interface BatchRunLifecycle {
+  generation: number;
+  jobId: string | null;
+  startPending: boolean;
+  startSent: boolean;
+  abandoned: boolean;
+  cancelRequested: boolean;
+  cancelInFlight: Promise<boolean> | null;
+}
+
 function StepIndicator({ phase }: { phase: Phase }) {
   const steps = ['Upload', 'Mapping', 'Review', 'Export'];
   const currentIdx = { upload: 0, running: 1, review: 2, exported: 3 }[phase];
@@ -141,6 +151,7 @@ export default function BatchPage() {
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -150,11 +161,23 @@ export default function BatchPage() {
   const jobIdRef = useRef<string | null>(null);
   const jobStatusRef = useRef<BatchJobStatus | null>(null);
   const interruptingRef = useRef(false);
+  const cancellingRef = useRef(false);
+  const runGenerationRef = useRef(0);
+  const activeLifecycleRef = useRef<BatchRunLifecycle | null>(null);
+  const mountedRef = useRef(true);
   const sessionFinalizedRef = useRef(false);
 
   const { startSession, emitEvent, completeSession } = useSession();
   const batchSessionIdRef = useRef<string | null>(null);
   const lastCompletedRef = useRef<number>(0);
+  const [pollGeneration, setPollGeneration] = useState(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     fileRef.current = file;
@@ -185,27 +208,74 @@ export default function BatchPage() {
     }
   }, []);
 
-  const clearInterruptedRunState = useCallback((updateUi = true) => {
-    if (updateUi) {
-      setFile(null);
-      setPreview(null);
-      setColumnMap(initialColumnMap());
-      setPhase('upload');
-      setJobId(null);
-      setJobStatus(null);
-      setLocalDecisions({});
-      setExpandedRows(new Set());
-      setFilterStatus('all');
-      setSearchQuery('');
-      setError(null);
+  const advanceRunGeneration = useCallback((updateState = true) => {
+    const nextGeneration = runGenerationRef.current + 1;
+    runGenerationRef.current = nextGeneration;
+    if (updateState && mountedRef.current) {
+      setPollGeneration(nextGeneration);
     }
-    fileRef.current = null;
-    previewRef.current = null;
-    phaseRef.current = 'upload';
-    jobIdRef.current = null;
-    jobStatusRef.current = null;
-    batchSessionIdRef.current = null;
-    lastCompletedRef.current = 0;
+    return nextGeneration;
+  }, []);
+
+  const invalidatePolling = useCallback((updateState = true) => {
+    stopPoll();
+    return advanceRunGeneration(updateState);
+  }, [advanceRunGeneration, stopPoll]);
+
+  const isCurrentRun = useCallback((expectedJobId: string, generation: number) => (
+    jobIdRef.current === expectedJobId && runGenerationRef.current === generation
+  ), []);
+
+  const isCurrentLifecycle = useCallback((lifecycle: BatchRunLifecycle) => (
+    activeLifecycleRef.current === lifecycle
+    && runGenerationRef.current === lifecycle.generation
+  ), []);
+
+  const beginRunLifecycle = useCallback(() => {
+    const generation = invalidatePolling();
+    const lifecycle: BatchRunLifecycle = {
+      generation,
+      jobId: null,
+      startPending: true,
+      startSent: false,
+      abandoned: false,
+      cancelRequested: false,
+      cancelInFlight: null,
+    };
+    activeLifecycleRef.current = lifecycle;
+    return lifecycle;
+  }, [invalidatePolling]);
+
+  const requestLifecycleCancellation = useCallback((
+    lifecycle: BatchRunLifecycle,
+    options: BatchInterruptionOptions = {},
+  ): Promise<boolean> => {
+    const jobToCancel = lifecycle.jobId;
+    if (!jobToCancel) return Promise.resolve(false);
+    if (lifecycle.cancelRequested) return Promise.resolve(true);
+    if (lifecycle.cancelInFlight) return lifecycle.cancelInFlight;
+
+    if (options.keepalive) {
+      const accepted = cancelBatchKeepalive(jobToCancel);
+      lifecycle.cancelRequested = accepted;
+      return Promise.resolve(accepted);
+    }
+
+    lifecycle.cancelInFlight = cancelBatch(jobToCancel)
+      .then(() => {
+        lifecycle.cancelRequested = true;
+        return true;
+      })
+      .catch((err) => {
+        console.error(err);
+        cancelBatchKeepalive(jobToCancel);
+        return false;
+      })
+      .finally(() => {
+        lifecycle.cancelInFlight = null;
+      });
+
+    return lifecycle.cancelInFlight;
   }, []);
 
   const recordInterruptedSession = useCallback(async (
@@ -243,53 +313,110 @@ export default function BatchPage() {
       event_type: 'batch_mapping_complete',
       payload: { mapped, unmapped },
     });
-    await completeSession(sid, 'complete', status);
-  }, [completeSession, emitEvent]);
+  }, [emitEvent]);
+
+  const applyBackendJobStatus = useCallback(async (
+    status: BatchJobStatus,
+    options: { expectedJobId?: string; generation?: number } = {},
+  ) => {
+    const stillCurrent = () => (
+      !options.expectedJobId
+      || options.generation === undefined
+      || isCurrentRun(options.expectedJobId, options.generation)
+    );
+    if (!stillCurrent()) return;
+
+    setJobStatus(status);
+    jobStatusRef.current = status;
+
+    const sid = batchSessionIdRef.current;
+    if (sid && status.completed > lastCompletedRef.current) {
+      lastCompletedRef.current = status.completed;
+      emitEvent(sid, {
+        timestamp: new Date().toISOString(),
+        actor: 'system',
+        event_type: 'batch_progress',
+        payload: { completed: status.completed, total: status.total },
+      }).catch(console.error);
+    }
+
+    if (status.status === 'done') {
+      stopPoll();
+      cancellingRef.current = false;
+      setCancelling(false);
+      try {
+        await recordCompletedSession(sid, status);
+      } catch (err) {
+        console.error(err);
+      }
+      if (!stillCurrent()) return;
+      phaseRef.current = 'review';
+      setPhase('review');
+      return;
+    }
+
+    if (status.status === 'interrupted') {
+      stopPoll();
+      cancellingRef.current = false;
+      setCancelling(false);
+      setError(null);
+      phaseRef.current = 'review';
+      setPhase('review');
+      return;
+    }
+
+    if (status.status === 'failed') {
+      stopPoll();
+      cancellingRef.current = false;
+      setCancelling(false);
+      setError(status.error ?? 'Batch job failed.');
+      phaseRef.current = 'upload';
+      setPhase('upload');
+    }
+  }, [emitEvent, isCurrentRun, recordCompletedSession, stopPoll]);
 
   const interruptRegisteredBatch = useCallback(async (
     options: BatchInterruptionOptions = {},
   ): Promise<boolean> => {
-    const currentJobId = jobIdRef.current;
+    const lifecycle = activeLifecycleRef.current;
+    const currentJobId = lifecycle?.jobId ?? jobIdRef.current;
     const currentStatus = jobStatusRef.current;
-    const sid = batchSessionIdRef.current;
-    const completed = currentStatus?.completed ?? lastCompletedRef.current;
-    const total = currentStatus?.total ?? previewRef.current?.row_count ?? 0;
+    const pendingStart = Boolean(lifecycle?.startPending);
 
     if (
-      !currentJobId
-      || phaseRef.current !== 'running'
-      || isTerminalBatchStatus(currentStatus?.status)
+      (!currentJobId && !pendingStart)
+      || (!pendingStart && isTerminalBatchStatus(currentStatus?.status))
     ) {
       return false;
     }
-    if (interruptingRef.current) return true;
 
+    if (lifecycle) {
+      lifecycle.abandoned = true;
+    }
     interruptingRef.current = true;
-    stopPoll();
-    clearInterruptedRunState(!options.keepalive);
+    invalidatePolling(!options.keepalive && mountedRef.current);
 
-    if (options.keepalive) {
-      cancelBatchKeepalive(currentJobId);
-      await recordInterruptedSession(sid, completed, total, options.reason ?? 'unmount');
+    if (!currentJobId) {
       return true;
     }
 
-    try {
-      const response = await cancelBatch(currentJobId);
-      if (!response.interrupted) {
-        const finalStatus = await getBatchStatus(currentJobId);
-        if (finalStatus.status === 'done') {
-          await recordCompletedSession(sid, finalStatus);
-          return false;
-        }
-      }
-    } catch {
-      cancelBatchKeepalive(currentJobId);
+    if (lifecycle) {
+      return requestLifecycleCancellation(lifecycle, options);
     }
 
-    await recordInterruptedSession(sid, completed, total, options.reason ?? 'navigation');
-    return true;
-  }, [clearInterruptedRunState, recordCompletedSession, recordInterruptedSession, stopPoll]);
+    if (options.keepalive) {
+      return cancelBatchKeepalive(currentJobId);
+    }
+
+    try {
+      await cancelBatch(currentJobId);
+      return true;
+    } catch (err) {
+      console.error(err);
+      cancelBatchKeepalive(currentJobId);
+      return false;
+    }
+  }, [invalidatePolling, requestLifecycleCancellation]);
 
   useEffect(() => {
     const unregister = registerActiveBatchInterrupter(interruptRegisteredBatch);
@@ -309,46 +436,21 @@ export default function BatchPage() {
   }, []);
 
   useEffect(() => {
-    if (!jobId || phase === 'upload') return;
+    if (!jobId || phase !== 'running' || pollGeneration === 0) return;
+
+    const pollingJobId = jobId;
+    const generation = pollGeneration;
 
     pollRef.current = setInterval(async () => {
       try {
-        const status = await getBatchStatus(jobId);
-        setJobStatus(status);
-
-        const sid = batchSessionIdRef.current;
-        if (sid && status.completed > lastCompletedRef.current) {
-          lastCompletedRef.current = status.completed;
-          emitEvent(sid, {
-            timestamp: new Date().toISOString(),
-            actor: 'system',
-            event_type: 'batch_progress',
-            payload: { completed: status.completed, total: status.total },
-          }).catch(console.error);
+        const status = await getBatchStatus(pollingJobId);
+        if (!isCurrentRun(pollingJobId, generation) || phaseRef.current !== 'running') {
+          return;
         }
-
-        if (status.status === 'done') {
-          recordCompletedSession(sid, status).catch(console.error);
-          stopPoll();
-          setPhase('review');
-        }
-
-        if (status.status === 'interrupted') {
-          recordInterruptedSession(
-            sid,
-            status.completed,
-            status.total,
-            'server',
-          ).catch(console.error);
-          clearInterruptedRunState();
-          stopPoll();
-        }
-
-        if (status.status === 'failed') {
-          stopPoll();
-          setError(status.error ?? 'Batch job failed.');
-          setPhase('upload');
-        }
+        applyBackendJobStatus(status, {
+          expectedJobId: pollingJobId,
+          generation,
+        }).catch(console.error);
       } catch {
         // silently ignore transient poll errors
       }
@@ -358,11 +460,10 @@ export default function BatchPage() {
   }, [
     jobId,
     phase,
+    pollGeneration,
     stopPoll,
-    emitEvent,
-    recordCompletedSession,
-    recordInterruptedSession,
-    clearInterruptedRunState,
+    isCurrentRun,
+    applyBackendJobStatus,
   ]);
 
   // ── File handling ──────────────────────────────────────────────────────────
@@ -426,12 +527,42 @@ export default function BatchPage() {
       setError('Please select the column containing field variable names.');
       return;
     }
+    const lifecycle = beginRunLifecycle();
     setError(null);
     setStarting(true);
     const selectedOntologies = targetOntologiesOrNull(targetOntologies);
     try {
       interruptingRef.current = false;
+      cancellingRef.current = false;
+      setCancelling(false);
       sessionFinalizedRef.current = false;
+      let sid: string | null = null;
+      try {
+        sid = await startSession('batch_map', {
+          filename: file.name,
+          row_count: preview.row_count,
+          target_ontology_column: columnMap.target_ontology || undefined,
+          target_ontologies: selectedOntologies,
+          auto_accept_threshold: autoAcceptThreshold / 100,
+        });
+        batchSessionIdRef.current = sid;
+      } catch {
+        batchSessionIdRef.current = null;
+      }
+
+      if (lifecycle.abandoned || !mountedRef.current || !isCurrentLifecycle(lifecycle)) {
+        if (!lifecycle.startSent && sid) {
+          recordInterruptedSession(
+            sid,
+            0,
+            preview.row_count,
+            'navigation',
+          ).catch(console.error);
+        }
+        return;
+      }
+
+      lifecycle.startSent = true;
       const { job_id } = await startBatch({
         file,
         columnMap,
@@ -440,7 +571,16 @@ export default function BatchPage() {
         targetOntologies,
         useRag,
         autoAcceptThreshold: autoAcceptThreshold / 100,
+        sessionId: sid,
       });
+      lifecycle.startPending = false;
+      lifecycle.jobId = job_id;
+
+      if (lifecycle.abandoned || !mountedRef.current || !isCurrentLifecycle(lifecycle)) {
+        requestLifecycleCancellation(lifecycle, { reason: 'navigation' }).catch(console.error);
+        return;
+      }
+
       jobIdRef.current = job_id;
       setJobId(job_id);
       setLocalDecisions({});
@@ -448,15 +588,7 @@ export default function BatchPage() {
       phaseRef.current = 'running';
       setPhase('running');
 
-      try {
-        const sid = await startSession('batch_map', {
-          filename: file.name,
-          row_count: preview.row_count,
-          target_ontology_column: columnMap.target_ontology || undefined,
-          target_ontologies: selectedOntologies,
-          auto_accept_threshold: autoAcceptThreshold / 100,
-        });
-        batchSessionIdRef.current = sid;
+      if (sid) {
         emitEvent(sid, {
           timestamp: new Date().toISOString(),
           actor: 'user',
@@ -470,20 +602,105 @@ export default function BatchPage() {
             auto_accept_threshold: autoAcceptThreshold / 100,
           },
         }).catch(console.error);
-      } catch {
-        batchSessionIdRef.current = null;
       }
     } catch (e: unknown) {
+      lifecycle.startPending = false;
+      if (lifecycle.abandoned || !mountedRef.current || !isCurrentLifecycle(lifecycle)) {
+        console.error(e);
+        return;
+      }
       setError(e instanceof Error ? e.message : 'Failed to start batch job.');
     } finally {
-      setStarting(false);
+      if (mountedRef.current && isCurrentLifecycle(lifecycle)) {
+        setStarting(false);
+      }
     }
   }
 
   // ── Cancel ─────────────────────────────────────────────────────────────────
 
+  const resumePollingForCurrentRun = useCallback(() => {
+    cancellingRef.current = false;
+    setCancelling(false);
+    if (jobIdRef.current && phaseRef.current === 'running') {
+      advanceRunGeneration();
+    }
+  }, [advanceRunGeneration]);
+
+  const cancelCurrentBatchManually = useCallback(async (): Promise<boolean> => {
+    const currentJobId = jobIdRef.current;
+    const currentStatus = jobStatusRef.current;
+
+    if (
+      !currentJobId
+      || phaseRef.current !== 'running'
+      || isTerminalBatchStatus(currentStatus?.status)
+    ) {
+      return false;
+    }
+    if (cancellingRef.current) return true;
+
+    cancellingRef.current = true;
+    setCancelling(true);
+    setError(null);
+    const cancelGeneration = invalidatePolling();
+    let cancelFailed = false;
+
+    try {
+      await cancelBatch(currentJobId);
+    } catch {
+      cancelFailed = true;
+    }
+
+    let confirmedStatus: BatchJobStatus | null = null;
+    try {
+      confirmedStatus = await getBatchStatus(currentJobId);
+    } catch {
+      confirmedStatus = null;
+    }
+
+    if (!isCurrentRun(currentJobId, cancelGeneration)) {
+      return false;
+    }
+
+    if (confirmedStatus) {
+      if (confirmedStatus.status === 'interrupted') {
+        await applyBackendJobStatus(confirmedStatus, {
+          expectedJobId: currentJobId,
+          generation: cancelGeneration,
+        });
+        return true;
+      }
+
+      if (confirmedStatus.status === 'done' || confirmedStatus.status === 'failed') {
+        await applyBackendJobStatus(confirmedStatus, {
+          expectedJobId: currentJobId,
+          generation: cancelGeneration,
+        });
+        return false;
+      }
+
+      setJobStatus(confirmedStatus);
+      jobStatusRef.current = confirmedStatus;
+      setError(cancelFailed
+        ? 'Cancellation failed and the batch is still running. Try canceling again.'
+        : 'Cancellation was requested, but the batch is still running. Try canceling again.');
+      resumePollingForCurrentRun();
+      return false;
+    }
+
+    setError('Could not confirm whether cancellation succeeded. The current results are still shown.');
+    resumePollingForCurrentRun();
+    return false;
+  }, [
+    applyBackendJobStatus,
+    invalidatePolling,
+    isCurrentRun,
+    resumePollingForCurrentRun,
+  ]);
+
   async function handleCancel() {
-    await interruptActiveBatch({ reason: 'manual' });
+    await cancelCurrentBatchManually();
   }
 
   // ── Decision handling ──────────────────────────────────────────────────────
@@ -615,6 +832,9 @@ export default function BatchPage() {
   // ── Reset ─────────────────────────────────────────────────────────────────
 
   function resetAll() {
+    invalidatePolling();
+    cancellingRef.current = false;
+    setCancelling(false);
     setFile(null);
     setPreview(null);
     setColumnMap(initialColumnMap());
@@ -636,6 +856,7 @@ export default function BatchPage() {
     jobIdRef.current = null;
     jobStatusRef.current = null;
     interruptingRef.current = false;
+    cancellingRef.current = false;
     sessionFinalizedRef.current = false;
     batchSessionIdRef.current = null;
     lastCompletedRef.current = 0;
@@ -920,8 +1141,8 @@ export default function BatchPage() {
               </div>
 
               <div className="batch-progress-footer">
-                <button className="btn-outline" onClick={handleCancel}>
-                  Cancel
+                <button className="btn-outline" onClick={handleCancel} disabled={cancelling}>
+                  {cancelling ? 'Cancelling...' : 'Cancel'}
                 </button>
               </div>
             </div>

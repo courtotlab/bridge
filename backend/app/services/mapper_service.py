@@ -6,6 +6,7 @@ from typing import Any
 
 from app.models.mapping import (
     AlternativeResult,
+    BatchMappingResponse,
     MappingMetadata,
     SingleMappingRequest,
     SingleMappingResponse,
@@ -15,11 +16,13 @@ from app.storage.config_store import (
     get_validated_loinc_credentials,
     load_config,
 )
+from app.storage.session_store import complete_session
 from app.utils.ontology import normalize_target_ontologies
 
 # ── Batch job store ──────────────────────────────────────────────────────────
 _batch_jobs: dict[str, dict] = {}
 _batch_jobs_lock = threading.Lock()
+_TERMINAL_BATCH_STATUSES = {"done", "failed", "interrupted"}
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,90 @@ _LOINC_CREDENTIALS_REQUIRED_MESSAGE = (
 _LOINC_OMITTED_WARNING = (
     "LOINC retrieval was skipped because LOINC credentials have not been validated in Settings."
 )
+
+
+def _mark_batch_interrupted_locked(job: dict) -> None:
+    """Mark a running batch interrupted without discarding completed results."""
+    if job["status"] in {"done", "failed"}:
+        return
+    job["cancel_requested"] = True
+    job["status"] = "interrupted"
+    job["completed"] = len(job["results"])
+    job["interrupted_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _mark_batch_failed_locked(job: dict, error: str) -> None:
+    if job["status"] in _TERMINAL_BATCH_STATUSES:
+        return
+    job["status"] = "failed"
+    job["error"] = error
+    job["ended_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _mark_batch_done_locked(job: dict) -> None:
+    if job.get("cancel_requested") or job["status"] == "interrupted":
+        _mark_batch_interrupted_locked(job)
+        return
+    if job["status"] in _TERMINAL_BATCH_STATUSES:
+        return
+    job["status"] = "done"
+    job["ended_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def _batch_response_snapshot(job_id: str, job: dict) -> dict:
+    return BatchMappingResponse(
+        job_id=job_id,
+        total=job["total"],
+        completed=job["completed"],
+        results=job["results"],
+        status=job["status"],
+        error=job.get("error"),
+    ).model_dump(mode="json")
+
+
+def _terminal_history_snapshot_locked(
+    job_id: str,
+    job: dict,
+) -> tuple[str, str, dict] | None:
+    session_id = job.get("session_id")
+    status = job.get("status")
+    if not session_id or status not in _TERMINAL_BATCH_STATUSES:
+        return None
+    history_status = {
+        "done": "complete",
+        "failed": "error",
+        "interrupted": "interrupted",
+    }[status]
+    return str(session_id), history_status, _batch_response_snapshot(job_id, job)
+
+
+def _persist_terminal_batch_history(
+    job_id: str,
+    history_snapshot: tuple[str, str, dict] | None,
+) -> None:
+    if history_snapshot is None:
+        return
+    session_id, history_status, snapshot = history_snapshot
+    try:
+        complete_session(session_id, history_status, snapshot)
+        logger.info(
+            "[batch:%s] history session=%s status=%s",
+            job_id,
+            session_id,
+            history_status,
+        )
+    except KeyError:
+        logger.warning(
+            "Batch job %s could not persist terminal history snapshot: "
+            "session %s was not found",
+            job_id,
+            session_id,
+        )
+    except Exception:
+        logger.exception(
+            "Batch job %s could not persist terminal history snapshot",
+            job_id,
+        )
 
 # Fix 2: frontend option values (lowercase, "/" → "_") → library entity_type
 _CLINICAL_AREA_MAP: dict[str, str | None] = {
@@ -434,6 +521,7 @@ def start_batch_job(
     target_ontology_column: str | None = None,
     row_target_ontologies: list[str] | None = None,
     original_columns: list[str] | None = None,
+    session_id: str | None = None,
 ) -> str:
     job_id = str(uuid.uuid4())
     normalized_target_ontologies = normalize_target_ontologies(target_ontologies)
@@ -455,6 +543,7 @@ def start_batch_job(
             "original_columns": original_columns or [],
             "cancel_requested": False,
             "started_at": datetime.now(timezone.utc).isoformat(),
+            "session_id": session_id,
         }
 
     def run():
@@ -465,17 +554,19 @@ def start_batch_job(
 
         from app.models.mapping import BatchRowResult
 
-        def mark_interrupted() -> None:
+        def mark_interrupted() -> tuple[str, str, dict] | None:
             with _batch_jobs_lock:
                 job = _batch_jobs.get(job_id)
-                if not job or job["status"] == "done":
-                    return
-                if job["status"] == "interrupted":
-                    return
-                job["cancel_requested"] = True
-                job["status"] = "interrupted"
-                job["results"] = []
-                job["interrupted_at"] = datetime.now(timezone.utc).isoformat()
+                if not job:
+                    return None
+                _mark_batch_interrupted_locked(job)
+                logger.info(
+                    "[batch:%s] terminal status=interrupted completed=%s/%s",
+                    job_id,
+                    job["completed"],
+                    job["total"],
+                )
+                return _terminal_history_snapshot_locked(job_id, job)
 
         def cancellation_requested() -> bool:
             with _batch_jobs_lock:
@@ -520,15 +611,24 @@ def start_batch_job(
             logger.error("Batch job %s failed during initialisation: %s", job_id, exc)
             with _batch_jobs_lock:
                 job = _batch_jobs.get(job_id)
-                if job and job["status"] != "interrupted":
-                    job["status"] = "failed"
-                    job["error"] = str(exc)
-                    job["ended_at"] = datetime.now(timezone.utc).isoformat()
+                if job:
+                    _mark_batch_failed_locked(job, str(exc))
+                    logger.info(
+                        "[batch:%s] terminal status=%s completed=%s/%s",
+                        job_id,
+                        job["status"],
+                        job["completed"],
+                        job["total"],
+                    )
+                    history_snapshot = _terminal_history_snapshot_locked(job_id, job)
+                else:
+                    history_snapshot = None
+            _persist_terminal_batch_history(job_id, history_snapshot)
             return
 
         for i, rec in enumerate(records):
             if cancellation_requested():
-                mark_interrupted()
+                _persist_terminal_batch_history(job_id, mark_interrupted())
                 return
             field_name_col = column_map.get("field_name") or "field_name"
             label_col = column_map.get("label")
@@ -555,6 +655,9 @@ def start_batch_job(
             safe_original_row = _json_safe_original_row(rec)
             safe_original_columns = original_columns or list(safe_original_row.keys())
             mapper, mapping_warning = mapper_for(effective_target_ontologies)
+            if cancellation_requested():
+                _persist_terminal_batch_history(job_id, mark_interrupted())
+                return
 
             print(
                 f'[Batch] Mapping term {i + 1}/{len(records)}: "{effective_term}" | '
@@ -667,29 +770,44 @@ def start_batch_job(
                     decision="rejected",
                     notes=str(exc) or type(exc).__name__,
                 )
+            history_snapshot = None
             with _batch_jobs_lock:
                 job = _batch_jobs.get(job_id)
                 if not job:
                     return
                 if job.get("cancel_requested") or job["status"] == "interrupted":
-                    job["status"] = "interrupted"
-                    job["results"] = []
-                    job["interrupted_at"] = datetime.now(timezone.utc).isoformat()
+                    _mark_batch_interrupted_locked(job)
+                    logger.info(
+                        "[batch:%s] terminal status=interrupted completed=%s/%s",
+                        job_id,
+                        job["completed"],
+                        job["total"],
+                    )
+                    history_snapshot = _terminal_history_snapshot_locked(job_id, job)
+                elif job["status"] in _TERMINAL_BATCH_STATUSES:
                     return
-                job["results"].append(row)
-                job["completed"] = i + 1
+                else:
+                    job["results"].append(row)
+                    job["completed"] = len(job["results"])
+            if history_snapshot is not None:
+                _persist_terminal_batch_history(job_id, history_snapshot)
+                return
 
+        history_snapshot = None
         with _batch_jobs_lock:
             job = _batch_jobs.get(job_id)
             if not job:
                 return
-            if job.get("cancel_requested") or job["status"] == "interrupted":
-                job["status"] = "interrupted"
-                job["results"] = []
-                job["interrupted_at"] = datetime.now(timezone.utc).isoformat()
-            else:
-                job["status"] = "done"
-                job["ended_at"] = datetime.now(timezone.utc).isoformat()
+            _mark_batch_done_locked(job)
+            logger.info(
+                "[batch:%s] terminal status=%s completed=%s/%s",
+                job_id,
+                job["status"],
+                job["completed"],
+                job["total"],
+            )
+            history_snapshot = _terminal_history_snapshot_locked(job_id, job)
+        _persist_terminal_batch_history(job_id, history_snapshot)
 
     threading.Thread(target=run, daemon=True).start()
     return job_id
@@ -708,14 +826,10 @@ def cancel_batch_job(job_id: str) -> bool:
         job = _batch_jobs.get(job_id)
         if not job:
             return False
-        if job["status"] == "done":
+        if job["status"] in {"done", "failed"}:
             return True
-        if job["status"] == "interrupted":
-            return True
-        job["cancel_requested"] = True
-        job["status"] = "interrupted"
-        job["results"] = []
-        job["interrupted_at"] = datetime.now(timezone.utc).isoformat()
+        _mark_batch_interrupted_locked(job)
+        logger.info("[batch:%s] cancellation requested", job_id)
         return True
 
 

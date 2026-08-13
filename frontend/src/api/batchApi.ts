@@ -45,6 +45,7 @@ export async function startBatch(params: {
   targetOntologies?: string[];
   useRag: boolean;
   autoAcceptThreshold: number;
+  sessionId?: string | null;
 }): Promise<{ job_id: string; total: number }> {
   const form = new FormData();
   form.append('file', params.file);
@@ -56,6 +57,7 @@ export async function startBatch(params: {
   appendTargetOntologiesJson(form, params.targetOntologies);
   form.append('use_rag', String(params.useRag));
   form.append('auto_accept_threshold', String(params.autoAcceptThreshold));
+  if (params.sessionId) form.append('session_id', params.sessionId);
   try {
     const { data } = await client.post('/batch/start', form, {
       headers: { 'Content-Type': 'multipart/form-data' },

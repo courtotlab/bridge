@@ -7,14 +7,20 @@ export interface BatchInterruptionOptions {
 
 type BatchInterrupter = (options?: BatchInterruptionOptions) => Promise<boolean>;
 
-let activeInterrupter: BatchInterrupter | null = null;
-let activeInterruption: Promise<boolean> | null = null;
+interface ActiveBatchRegistration {
+  interrupter: BatchInterrupter;
+  token: object;
+}
+
+let activeRegistration: ActiveBatchRegistration | null = null;
+let activeInterruption: { promise: Promise<boolean>; token: object } | null = null;
 
 export function registerActiveBatchInterrupter(interrupter: BatchInterrupter): () => void {
-  activeInterrupter = interrupter;
+  const registration = { interrupter, token: {} };
+  activeRegistration = registration;
   return () => {
-    if (activeInterrupter === interrupter) {
-      activeInterrupter = null;
+    if (activeRegistration === registration) {
+      activeRegistration = null;
     }
   };
 }
@@ -22,14 +28,20 @@ export function registerActiveBatchInterrupter(interrupter: BatchInterrupter): (
 export function interruptActiveBatch(
   options: BatchInterruptionOptions = {},
 ): Promise<boolean> {
-  if (!activeInterrupter) return Promise.resolve(false);
-  if (activeInterruption) return activeInterruption;
+  const registration = activeRegistration;
+  if (!registration) return Promise.resolve(false);
+  if (activeInterruption?.token === registration.token) {
+    return activeInterruption.promise;
+  }
 
-  activeInterruption = activeInterrupter(options)
+  const promise = registration.interrupter(options)
     .catch(() => false)
     .finally(() => {
-      activeInterruption = null;
+      if (activeInterruption?.token === registration.token) {
+        activeInterruption = null;
+      }
     });
+  activeInterruption = { promise, token: registration.token };
 
-  return activeInterruption;
+  return promise;
 }

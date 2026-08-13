@@ -9,6 +9,7 @@ from app.models.session import EventRecord, InputSummary, SessionRecord, Session
 _SESSION_DIR = Path.home() / ".ontology_mapper" / "session_logs"
 _INDEX_FILE = _SESSION_DIR / "index.json"
 _lock = threading.Lock()
+_TERMINAL_SESSION_STATUSES = {"complete", "error", "interrupted"}
 
 
 def _session_filename(created_at: datetime, session_id: str) -> str:
@@ -20,7 +21,7 @@ def _read_index() -> dict[str, dict]:
         return {}
     try:
         return json.loads(_INDEX_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001 - tolerate a corrupt history index
         return {}
 
 
@@ -92,6 +93,12 @@ def complete_session(
             raise KeyError(session_id)
         filepath = _SESSION_DIR / entry["filename"]
         record = SessionRecord.model_validate_json(filepath.read_text(encoding="utf-8"))
+        if (
+            record.status in _TERMINAL_SESSION_STATUSES
+            and status in _TERMINAL_SESSION_STATUSES
+            and record.status != status
+        ):
+            return
         record.status = status  # type: ignore[assignment]
         record.result_snapshot = result_snapshot
         record.updated_at = datetime.now(timezone.utc)
@@ -107,7 +114,7 @@ def get_all_sessions() -> list[SessionSummary]:
         try:
             data = {k: v for k, v in entry.items() if k != "filename"}
             summaries.append(SessionSummary.model_validate(data))
-        except Exception:
+        except Exception:  # noqa: BLE001, S112 - skip malformed legacy index entries
             continue
     summaries.sort(key=lambda s: s.created_at, reverse=True)
     return summaries

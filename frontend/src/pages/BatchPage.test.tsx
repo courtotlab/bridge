@@ -1,5 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode } from 'react';
+import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   cancelBatch,
@@ -10,6 +12,7 @@ import type { BatchJobStatus, BatchRowResult } from '../types/mapping';
 import { BATCH_FILE_ACCEPT } from '../utils/batchFiles';
 import { promoteBatchAlternative } from '../utils/batchPromotion';
 import { interruptActiveBatch } from '../utils/activeBatchInterruption';
+import Sidebar from '../components/Sidebar';
 import BatchPage from './BatchPage';
 
 const mocks = vi.hoisted(() => ({
@@ -23,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   startSession: vi.fn(),
   emitEvent: vi.fn(),
   completeSession: vi.fn(),
+  getStatus: vi.fn(),
 }));
 
 vi.mock('../api/batchApi', () => ({
@@ -42,6 +46,10 @@ vi.mock('../context/SessionContext', () => ({
     emitEvent: mocks.emitEvent,
     completeSession: mocks.completeSession,
   }),
+}));
+
+vi.mock('../api/configApi', () => ({
+  getStatus: mocks.getStatus,
 }));
 
 const COMPLETE_COLUMNS = [
@@ -100,8 +108,78 @@ function batchStatus(results: BatchRowResult[]): BatchJobStatus {
   };
 }
 
+function runningBatchStatus(results: BatchRowResult[], total = results.length): BatchJobStatus {
+  return {
+    job_id: 'job-1',
+    total,
+    completed: results.length,
+    results,
+    status: 'running',
+    error: null,
+  };
+}
+
+function interruptedBatchStatus(results: BatchRowResult[], total = results.length): BatchJobStatus {
+  return {
+    job_id: 'job-1',
+    total,
+    completed: results.length,
+    results,
+    status: 'interrupted',
+    error: null,
+  };
+}
+
+function failedBatchStatus(results: BatchRowResult[], total = results.length): BatchJobStatus {
+  return {
+    job_id: 'job-1',
+    total,
+    completed: results.length,
+    results,
+    status: 'failed',
+    error: 'Mapper failed.',
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+function rowNamed(row_index: number, field_name: string, suggested_code: string): BatchRowResult {
+  return mappedRow({
+    row_index,
+    field_name,
+    label: `${field_name} label`,
+    suggested_code,
+    suggested_term: `${field_name} term`,
+  });
+}
+
 function setup() {
   const view = render(<BatchPage />);
+  const input = view.container.querySelector('input[type="file"]');
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error('Batch file input was not rendered');
+  }
+  return {
+    user: userEvent.setup(),
+    input,
+    ...view,
+  };
+}
+
+function setupStrictMode() {
+  const view = render(
+    <StrictMode>
+      <BatchPage />
+    </StrictMode>,
+  );
   const input = view.container.querySelector('input[type="file"]');
   if (!(input instanceof HTMLInputElement)) {
     throw new Error('Batch file input was not rendered');
@@ -132,6 +210,97 @@ async function renderCompletedBatchReview(status: BatchJobStatus) {
   })).toBeInTheDocument();
 
   return view;
+}
+
+async function renderRunningBatch() {
+  const view = setup();
+  const file = fileNamed('data.csv', 'text/csv');
+
+  await view.user.upload(view.input, file);
+  await waitFor(() => {
+    expect(screen.getAllByText('data.csv').length).toBeGreaterThan(0);
+  });
+  await view.user.click(screen.getByRole('button', { name: /start mapping/i }));
+
+  await waitFor(() => expect(mocks.getBatchStatus).toHaveBeenCalled(), {
+    timeout: 3000,
+  });
+  await screen.findByRole('button', { name: /^cancel$/i }, {
+    timeout: 3000,
+  });
+
+  return view;
+}
+
+function renderBatchRoute(initialEntries = ['/batch']) {
+  const view = render(
+    <MemoryRouter initialEntries={initialEntries}>
+      <div>
+        <Sidebar />
+        <Routes>
+          <Route path="/batch" element={<BatchPage />} />
+          <Route path="/search" element={<div>Term Search Page</div>} />
+          <Route path="/validator" element={<div>Validator Page</div>} />
+          <Route path="/history" element={<div>History Page</div>} />
+          <Route path="/settings" element={<div>Settings Page</div>} />
+        </Routes>
+      </div>
+    </MemoryRouter>,
+  );
+  const input = view.container.querySelector('input[type="file"]');
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error('Batch file input was not rendered');
+  }
+  return {
+    user: userEvent.setup(),
+    input,
+    ...view,
+  };
+}
+
+function renderStrictBatchRoute(initialEntries = ['/batch']) {
+  const view = render(
+    <StrictMode>
+      <MemoryRouter initialEntries={initialEntries}>
+        <div>
+          <Sidebar />
+          <Routes>
+            <Route path="/batch" element={<BatchPage />} />
+            <Route path="/search" element={<div>Term Search Page</div>} />
+            <Route path="/validator" element={<div>Validator Page</div>} />
+            <Route path="/history" element={<div>History Page</div>} />
+            <Route path="/settings" element={<div>Settings Page</div>} />
+          </Routes>
+        </div>
+      </MemoryRouter>
+    </StrictMode>,
+  );
+  const input = view.container.querySelector('input[type="file"]');
+  if (!(input instanceof HTMLInputElement)) {
+    throw new Error('Batch file input was not rendered');
+  }
+  return {
+    user: userEvent.setup(),
+    input,
+    ...view,
+  };
+}
+
+async function startRunningBatchFrom(view: ReturnType<typeof renderBatchRoute>) {
+  const file = fileNamed('data.csv', 'text/csv');
+
+  await view.user.upload(view.input, file);
+  await waitFor(() => {
+    expect(screen.getAllByText('data.csv').length).toBeGreaterThan(0);
+  });
+  await view.user.click(screen.getByRole('button', { name: /start mapping/i }));
+
+  await waitFor(() => expect(mocks.getBatchStatus).toHaveBeenCalled(), {
+    timeout: 3000,
+  });
+  await screen.findByRole('button', { name: /^cancel$/i }, {
+    timeout: 3000,
+  });
 }
 
 function getColumnSelectors(): HTMLSelectElement[] {
@@ -174,6 +343,13 @@ beforeEach(() => {
   mocks.startSession.mockResolvedValue('session-1');
   mocks.emitEvent.mockResolvedValue(undefined);
   mocks.completeSession.mockResolvedValue(undefined);
+  mocks.getStatus.mockResolvedValue({
+    status: {
+      layer1: 'ok',
+      layer2: 'ok',
+      layer3: 'ok',
+    },
+  });
 });
 
 afterEach(async () => {
@@ -247,7 +423,7 @@ describe('BatchPage file upload formats', () => {
     });
     await user.click(screen.getByRole('button', { name: /start mapping/i }));
     await waitFor(() => expect(startBatch).toHaveBeenCalledWith(
-      expect.objectContaining({ file: tsvFile }),
+      expect.objectContaining({ file: tsvFile, sessionId: 'session-1' }),
     ));
 
     await interruptActiveBatch({ reason: 'manual' });
@@ -306,6 +482,452 @@ describe('BatchPage file upload formats', () => {
         targetOntologies: ['EFO'],
       }),
     ));
+  });
+});
+
+describe('BatchPage manual cancellation', () => {
+  it('confirms cancellation through status and keeps backend partial rows visible', async () => {
+    const rows = [
+      rowNamed(0, 'sbp', 'LOINC:8480-6'),
+      rowNamed(1, 'dbp', 'LOINC:8462-4'),
+    ];
+    mocks.getBatchStatus
+      .mockResolvedValueOnce(runningBatchStatus(rows, 4))
+      .mockResolvedValueOnce(interruptedBatchStatus(rows, 4));
+    const { user } = await renderRunningBatch();
+
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(await screen.findByText('Review and Approve Mappings')).toBeInTheDocument();
+    expect(screen.getByText('sbp')).toBeInTheDocument();
+    expect(screen.getByText('dbp')).toBeInTheDocument();
+    expect(mocks.cancelBatch).toHaveBeenCalledWith('job-1');
+    expect(mocks.completeSession).not.toHaveBeenCalledWith(
+      'session-1',
+      'interrupted',
+      expect.anything(),
+    );
+  });
+
+  it('disables duplicate manual cancellation while the cancel request is in flight', async () => {
+    const rows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+    const cancelRequest = deferred<{ interrupted: boolean }>();
+    mocks.cancelBatch.mockImplementationOnce(() => cancelRequest.promise);
+    mocks.getBatchStatus
+      .mockResolvedValueOnce(runningBatchStatus(rows, 2))
+      .mockResolvedValueOnce(interruptedBatchStatus(rows, 2));
+    const { user } = await renderRunningBatch();
+
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+    const cancellingButton = await screen.findByRole('button', { name: /cancelling/i });
+    expect(cancellingButton).toBeDisabled();
+
+    await user.click(cancellingButton);
+    expect(mocks.cancelBatch).toHaveBeenCalledTimes(1);
+
+    cancelRequest.resolve({ interrupted: true });
+    expect(await screen.findByText('Review and Approve Mappings')).toBeInTheDocument();
+  });
+
+  it('ignores a stale poll response that resolves after manual cancellation', async () => {
+    const initialRows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+    const stalePoll = deferred<BatchJobStatus>();
+    mocks.getBatchStatus
+      .mockResolvedValueOnce(runningBatchStatus(initialRows, 3))
+      .mockImplementationOnce(() => stalePoll.promise)
+      .mockResolvedValueOnce(interruptedBatchStatus(initialRows, 3));
+    const { user } = await renderRunningBatch();
+
+    await waitFor(() => expect(mocks.getBatchStatus).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+    });
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+    expect(await screen.findByText('Review and Approve Mappings')).toBeInTheDocument();
+
+    stalePoll.resolve(runningBatchStatus([
+      ...initialRows,
+      rowNamed(1, 'late_row', 'LOINC:9999-9'),
+    ], 3));
+
+    await waitFor(() => {
+      expect(screen.queryByText('late_row')).not.toBeInTheDocument();
+    });
+  });
+
+  it('uses backend done state when cancellation races with completion', async () => {
+    const rows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+    mocks.cancelBatch.mockResolvedValueOnce({ interrupted: false });
+    mocks.getBatchStatus
+      .mockResolvedValueOnce(runningBatchStatus(rows, 1))
+      .mockResolvedValueOnce(batchStatus(rows));
+    const { user } = await renderRunningBatch();
+
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(await screen.findByText('Review and Approve Mappings')).toBeInTheDocument();
+    expect(mocks.emitEvent).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({
+        event_type: 'batch_mapping_complete',
+      }),
+    );
+    expect(mocks.completeSession).not.toHaveBeenCalledWith(
+      'session-1',
+      'complete',
+      expect.anything(),
+    );
+  });
+
+  it('uses backend failed state when cancellation races with failure', async () => {
+    const rows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+    mocks.getBatchStatus
+      .mockResolvedValueOnce(runningBatchStatus(rows, 2))
+      .mockResolvedValueOnce(failedBatchStatus(rows, 2));
+    const { user } = await renderRunningBatch();
+
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(await screen.findByText('Mapper failed.')).toBeInTheDocument();
+    expect(screen.queryByText('Review and Approve Mappings')).not.toBeInTheDocument();
+  });
+
+  it('does not claim success when backend status remains running after cancel', async () => {
+    const rows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+    mocks.getBatchStatus
+      .mockResolvedValueOnce(runningBatchStatus(rows, 3))
+      .mockResolvedValueOnce(runningBatchStatus(rows, 3));
+    const { user } = await renderRunningBatch();
+
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(await screen.findByText(/batch is still running/i)).toBeInTheDocument();
+    expect(screen.getAllByText('sbp').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: /^cancel$/i })).toBeEnabled();
+  });
+
+  it('preserves the current table and allows retry when cancellation status is unknown', async () => {
+    const rows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+    mocks.cancelBatch
+      .mockRejectedValueOnce(new Error('network down'))
+      .mockResolvedValueOnce({ interrupted: true });
+    mocks.getBatchStatus
+      .mockResolvedValueOnce(runningBatchStatus(rows, 3))
+      .mockRejectedValueOnce(new Error('status unavailable'))
+      .mockResolvedValueOnce(interruptedBatchStatus(rows, 3));
+    const { user } = await renderRunningBatch();
+
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(await screen.findByText(/could not confirm whether cancellation succeeded/i)).toBeInTheDocument();
+    expect(screen.getAllByText('sbp').length).toBeGreaterThan(0);
+
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+
+    expect(await screen.findByText('Review and Approve Mappings')).toBeInTheDocument();
+    expect(mocks.cancelBatch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('BatchPage navigation cancellation', () => {
+  it('starts a normal batch under StrictMode without treating the run as abandoned', async () => {
+    const rows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+    mocks.getBatchStatus.mockResolvedValue(batchStatus(rows));
+    const view = setupStrictMode();
+
+    await view.user.upload(view.input, fileNamed('data.csv', 'text/csv'));
+    await waitFor(() => {
+      expect(screen.getAllByText('data.csv').length).toBeGreaterThan(0);
+    });
+    await view.user.click(screen.getByRole('button', { name: /start mapping/i }));
+
+    await waitFor(() => expect(mocks.startBatch).toHaveBeenCalledTimes(1));
+    expect(mocks.cancelBatch).not.toHaveBeenCalled();
+    expect(mocks.cancelBatchKeepalive).not.toHaveBeenCalled();
+    expect(mocks.completeSession).not.toHaveBeenCalledWith(
+      'session-1',
+      'interrupted',
+      expect.anything(),
+    );
+
+    await waitFor(() => expect(mocks.getBatchStatus).toHaveBeenCalledWith('job-1'), {
+      timeout: 3000,
+    });
+    expect(await screen.findByText('Review and Approve Mappings', {}, {
+      timeout: 3000,
+    })).toBeInTheDocument();
+    expect(mocks.emitEvent).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({
+        event_type: 'batch_mapping_complete',
+      }),
+    );
+    expect(mocks.completeSession).not.toHaveBeenCalledWith(
+      'session-1',
+      'complete',
+      expect.anything(),
+    );
+  });
+
+  it.each([
+    ['Term Search', 'Term Search Page'],
+    ['Validator', 'Validator Page'],
+    ['History', 'History Page'],
+    ['Settings', 'Settings Page'],
+  ])('cancels a known active job before sidebar navigation to %s', async (linkName, pageText) => {
+    const rows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+    mocks.getBatchStatus.mockResolvedValue(runningBatchStatus(rows, 3));
+    const view = renderBatchRoute();
+    await startRunningBatchFrom(view);
+
+    await view.user.click(screen.getByRole('link', { name: new RegExp(linkName, 'i') }));
+
+    await waitFor(() => expect(mocks.cancelBatch).toHaveBeenCalledWith('job-1'));
+    expect(await screen.findByText(pageText)).toBeInTheDocument();
+  });
+
+  it('cancels a known active job from real Sidebar navigation under StrictMode', async () => {
+    const rows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+    const stalePoll = deferred<BatchJobStatus>();
+    mocks.getBatchStatus
+      .mockResolvedValueOnce(runningBatchStatus(rows, 3))
+      .mockImplementationOnce(() => stalePoll.promise);
+    const view = renderStrictBatchRoute();
+    await startRunningBatchFrom(view);
+
+    await waitFor(() => expect(mocks.getBatchStatus).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+    });
+    await view.user.click(screen.getByRole('link', { name: /term search/i }));
+
+    await waitFor(() => expect(mocks.cancelBatch).toHaveBeenCalledWith('job-1'));
+    expect(await screen.findByText('Term Search Page')).toBeInTheDocument();
+
+    stalePoll.resolve(batchStatus([
+      ...rows,
+      rowNamed(1, 'late_row', 'LOINC:9999-9'),
+    ]));
+
+    await waitFor(() => {
+      expect(screen.queryByText('late_row')).not.toBeInTheDocument();
+    });
+    expect(mocks.completeSession).not.toHaveBeenCalledWith(
+      'session-1',
+      'complete',
+      expect.anything(),
+    );
+  });
+
+  it('cancels the second run after a prior manual cancellation', async () => {
+    const firstRows = [rowNamed(0, 'batch_a_row', 'LOINC:1111-1')];
+    const secondRows = [rowNamed(0, 'batch_b_row', 'LOINC:2222-2')];
+    mocks.startBatch
+      .mockResolvedValueOnce({ job_id: 'job-a', total: 2 })
+      .mockResolvedValueOnce({ job_id: 'job-b', total: 2 });
+    mocks.getBatchStatus
+      .mockResolvedValueOnce(runningBatchStatus(firstRows, 2))
+      .mockResolvedValueOnce(interruptedBatchStatus(firstRows, 2))
+      .mockResolvedValueOnce(runningBatchStatus(secondRows, 2));
+    const view = renderStrictBatchRoute();
+    await startRunningBatchFrom(view);
+
+    await view.user.click(screen.getByRole('button', { name: /^cancel$/i }));
+    expect(await screen.findByText('Review and Approve Mappings')).toBeInTheDocument();
+    expect(mocks.cancelBatch).toHaveBeenNthCalledWith(1, 'job-a');
+
+    await view.user.click(screen.getByRole('button', { name: /back to upload/i }));
+    const input = view.container.querySelector('input[type="file"]');
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error('Batch file input was not rendered after reset');
+    }
+    await view.user.upload(input, fileNamed('second.csv', 'text/csv'));
+    await waitFor(() => {
+      expect(screen.getAllByText('second.csv').length).toBeGreaterThan(0);
+    });
+    await view.user.click(screen.getByRole('button', { name: /start mapping/i }));
+    expect(await screen.findByRole('button', { name: /^cancel$/i }, {
+      timeout: 3000,
+    })).toBeInTheDocument();
+
+    await view.user.click(screen.getByRole('link', { name: /term search/i }));
+
+    await waitFor(() => expect(mocks.cancelBatch).toHaveBeenCalledWith('job-b'));
+    expect(await screen.findByText('Term Search Page')).toBeInTheDocument();
+  });
+
+  it('ignores stale poll responses after sidebar navigation away', async () => {
+    const rows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+    const stalePoll = deferred<BatchJobStatus>();
+    mocks.getBatchStatus
+      .mockResolvedValueOnce(runningBatchStatus(rows, 3))
+      .mockImplementationOnce(() => stalePoll.promise);
+    const view = renderBatchRoute();
+    await startRunningBatchFrom(view);
+
+    await waitFor(() => expect(mocks.getBatchStatus).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+    });
+    await view.user.click(screen.getByRole('link', { name: /term search/i }));
+    expect(await screen.findByText('Term Search Page')).toBeInTheDocument();
+
+    stalePoll.resolve(batchStatus([
+      ...rows,
+      rowNamed(1, 'late_row', 'LOINC:9999-9'),
+    ]));
+
+    await waitFor(() => {
+      expect(screen.queryByText('late_row')).not.toBeInTheDocument();
+    });
+    expect(mocks.completeSession).not.toHaveBeenCalledWith(
+      'session-1',
+      'complete',
+      expect.anything(),
+    );
+  });
+
+  it('cancels a job returned after sidebar navigation during start', async () => {
+    const startRequest = deferred<{ job_id: string; total: number }>();
+    mocks.startBatch.mockImplementationOnce(() => startRequest.promise);
+    const view = renderBatchRoute();
+
+    await view.user.upload(view.input, fileNamed('data.csv', 'text/csv'));
+    await waitFor(() => {
+      expect(screen.getAllByText('data.csv').length).toBeGreaterThan(0);
+    });
+    await view.user.click(screen.getByRole('button', { name: /start mapping/i }));
+    await waitFor(() => expect(mocks.startBatch).toHaveBeenCalledTimes(1));
+
+    await view.user.click(screen.getByRole('link', { name: /term search/i }));
+    expect(await screen.findByText('Term Search Page')).toBeInTheDocument();
+
+    startRequest.resolve({ job_id: 'job-late', total: 1 });
+
+    await waitFor(() => expect(mocks.cancelBatch).toHaveBeenCalledWith('job-late'));
+    expect(mocks.getBatchStatus).not.toHaveBeenCalled();
+  });
+
+  it('cancels a job returned after direct unmount during start', async () => {
+    const startRequest = deferred<{ job_id: string; total: number }>();
+    mocks.startBatch.mockImplementationOnce(() => startRequest.promise);
+    const view = setup();
+
+    await view.user.upload(view.input, fileNamed('data.csv', 'text/csv'));
+    await waitFor(() => {
+      expect(screen.getAllByText('data.csv').length).toBeGreaterThan(0);
+    });
+    await view.user.click(screen.getByRole('button', { name: /start mapping/i }));
+    await waitFor(() => expect(mocks.startBatch).toHaveBeenCalledTimes(1));
+
+    view.unmount();
+    startRequest.resolve({ job_id: 'job-after-unmount', total: 1 });
+
+    await waitFor(() => expect(mocks.cancelBatch).toHaveBeenCalledWith('job-after-unmount'));
+    expect(mocks.getBatchStatus).not.toHaveBeenCalled();
+  });
+
+  it('does not let an old abandoned start response overwrite a later run', async () => {
+    const startA = deferred<{ job_id: string; total: number }>();
+    mocks.startBatch
+      .mockImplementationOnce(() => startA.promise)
+      .mockResolvedValueOnce({ job_id: 'job-b', total: 1 });
+    mocks.getBatchStatus.mockResolvedValue(runningBatchStatus([
+      rowNamed(0, 'batch_b_row', 'LOINC:8480-6'),
+    ], 1));
+
+    const first = setup();
+    await first.user.upload(first.input, fileNamed('first.csv', 'text/csv'));
+    await waitFor(() => {
+      expect(screen.getAllByText('first.csv').length).toBeGreaterThan(0);
+    });
+    await first.user.click(screen.getByRole('button', { name: /start mapping/i }));
+    await waitFor(() => expect(mocks.startBatch).toHaveBeenCalledTimes(1));
+    first.unmount();
+
+    const second = setup();
+    await second.user.upload(second.input, fileNamed('second.csv', 'text/csv'));
+    await waitFor(() => {
+      expect(screen.getAllByText('second.csv').length).toBeGreaterThan(0);
+    });
+    await second.user.click(screen.getByRole('button', { name: /start mapping/i }));
+    await waitFor(() => expect(mocks.startBatch).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole('button', { name: /^cancel$/i }, {
+      timeout: 3000,
+    })).toBeInTheDocument();
+
+    startA.resolve({ job_id: 'job-a', total: 1 });
+
+    await waitFor(() => expect(mocks.cancelBatch).toHaveBeenCalledWith('job-a'));
+    expect(mocks.getBatchStatus).toHaveBeenCalledWith('job-b');
+    expect(mocks.getBatchStatus).not.toHaveBeenCalledWith('job-a');
+    expect(screen.getAllByText('batch_b_row').length).toBeGreaterThan(0);
+  });
+
+  it('requests keepalive cancellation when a known active job unmounts', async () => {
+    const rows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+    mocks.getBatchStatus.mockResolvedValue(runningBatchStatus(rows, 3));
+    const view = await renderRunningBatch();
+
+    view.unmount();
+
+    await waitFor(() => expect(mocks.cancelBatchKeepalive).toHaveBeenCalledWith('job-1'));
+  });
+
+  it('does not duplicate a successful sidebar cancellation during unmount cleanup', async () => {
+    const rows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+    mocks.getBatchStatus.mockResolvedValue(runningBatchStatus(rows, 3));
+    const view = renderBatchRoute();
+    await startRunningBatchFrom(view);
+
+    await view.user.click(screen.getByRole('link', { name: /term search/i }));
+
+    expect(await screen.findByText('Term Search Page')).toBeInTheDocument();
+    expect(mocks.cancelBatch).toHaveBeenCalledTimes(1);
+    expect(mocks.cancelBatchKeepalive).not.toHaveBeenCalledWith('job-1');
+  });
+
+  it('does not wait for final interrupted status before sidebar navigation', async () => {
+    const rows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+    mocks.getBatchStatus.mockResolvedValue(runningBatchStatus(rows, 3));
+    const view = renderBatchRoute();
+    await startRunningBatchFrom(view);
+
+    await view.user.click(screen.getByRole('link', { name: /history/i }));
+
+    expect(await screen.findByText('History Page')).toBeInTheDocument();
+    expect(mocks.cancelBatch).toHaveBeenCalledWith('job-1');
+    expect(mocks.getBatchStatus).toHaveBeenCalledTimes(1);
+  });
+
+  it('navigates and falls back to keepalive when sidebar cancellation fails', async () => {
+    const rows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+    mocks.getBatchStatus.mockResolvedValue(runningBatchStatus(rows, 3));
+    mocks.cancelBatch.mockRejectedValueOnce(new Error('cancel failed'));
+    const view = renderBatchRoute();
+    await startRunningBatchFrom(view);
+
+    await view.user.click(screen.getByRole('link', { name: /settings/i }));
+
+    expect(await screen.findByText('Settings Page')).toBeInTheDocument();
+    expect(mocks.cancelBatch).toHaveBeenCalledWith('job-1');
+    expect(mocks.cancelBatchKeepalive).toHaveBeenCalledWith('job-1');
+  });
+
+  it('normal completion still records History and shows review results', async () => {
+    const rows = [rowNamed(0, 'sbp', 'LOINC:8480-6')];
+
+    await renderCompletedBatchReview(batchStatus(rows));
+
+    expect(await screen.findByText('Review and Approve Mappings')).toBeInTheDocument();
+    await waitFor(() => expect(mocks.emitEvent).toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({
+        event_type: 'batch_mapping_complete',
+      }),
+    ));
+    expect(mocks.completeSession).not.toHaveBeenCalledWith(
+      'session-1',
+      'complete',
+      expect.anything(),
+    );
   });
 });
 

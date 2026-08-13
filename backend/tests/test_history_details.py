@@ -6,6 +6,7 @@ from app.api import history as history_api
 from app.api.history import normalize_history_details
 from app.main import app
 from app.models.session import EventRecord, InputSummary, SessionRecord
+from app.services import mapper_service
 
 client = TestClient(app)
 
@@ -112,6 +113,82 @@ def test_batch_detail_includes_rows_and_persisted_decisions():
     assert detail.result.summary.accepted_count == 1
     assert detail.result.summary.rejected_count == 1
     assert detail.result.summary.unmapped_count == 1
+
+
+def test_interrupted_batch_detail_includes_partial_rows():
+    record = _record(
+        "batch_map",
+        InputSummary(filename="dictionary.csv", row_count=3),
+        {
+            "job_id": "job-1",
+            "total": 3,
+            "completed": 1,
+            "status": "interrupted",
+            "results": [
+                {
+                    "row_index": 0,
+                    "field_name": "sbp",
+                    "label": "Systolic BP",
+                    "suggested_code": "LOINC:8480-6",
+                    "suggested_term": "Systolic blood pressure",
+                    "ontology": "LOINC",
+                    "confidence": 0.92,
+                    "logic_type": "rag",
+                    "decision": "accepted",
+                    "alternatives": [],
+                }
+            ],
+        },
+    )
+    record.status = "interrupted"
+    detail = normalize_history_details(record)
+
+    assert detail.status == "interrupted"
+    assert detail.result.status == "interrupted"
+    assert detail.result.total == 3
+    assert detail.result.completed == 1
+    assert [row.field_name for row in detail.result.rows] == ["sbp"]
+    assert detail.result.summary.completed_count == 1
+
+
+def test_get_interrupted_history_detail_does_not_resume_batch(monkeypatch):
+    record = _record(
+        "batch_map",
+        InputSummary(filename="dictionary.csv", row_count=1),
+        {
+            "job_id": "job-1",
+            "total": 1,
+            "completed": 1,
+            "status": "interrupted",
+            "results": [
+                {
+                    "row_index": 0,
+                    "field_name": "sbp",
+                    "suggested_code": "LOINC:8480-6",
+                    "suggested_term": "Systolic blood pressure",
+                    "ontology": "LOINC",
+                    "confidence": 0.92,
+                    "logic_type": "rag",
+                    "decision": "accepted",
+                    "alternatives": [],
+                }
+            ],
+        },
+    )
+    record.status = "interrupted"
+    monkeypatch.setattr(history_api, "get_session", lambda _session_id: record)
+
+    def fail_if_started(*_args, **_kwargs):
+        raise AssertionError("History detail must not start batch jobs")
+
+    monkeypatch.setattr(mapper_service, "start_batch_job", fail_if_started)
+
+    response = client.get("/api/history/batch_map-1")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "interrupted"
+    assert payload["result"]["rows"][0]["field_name"] == "sbp"
 
 
 def test_validation_detail_includes_individual_results_and_counts():

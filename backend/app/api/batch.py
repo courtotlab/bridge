@@ -189,6 +189,7 @@ async def start_batch(
     clinical_area: str | None = Form(None),
     target_ontology_column: str | None = Form(None),
     target_ontologies_json: str | None = Form(None),
+    session_id: str | None = Form(None),
     # Deprecated compatibility field: planned retrieval is controlled by Settings.retrieval_mode.
     deprecated_use_rag: bool = Form(True, alias="use_rag"),
     auto_accept_threshold: float = Form(0.85),
@@ -216,6 +217,7 @@ async def start_batch(
         target_ontology_column=target_ontology_column,
         row_target_ontologies=row_target_ontologies,
         original_columns=list(df.columns),
+        session_id=session_id,
     )
     return {"job_id": job_id, "total": len(records)}
 

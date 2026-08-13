@@ -238,6 +238,28 @@ def test_start_batch_accepts_per_row_target_ontology_column(monkeypatch):
     assert captured["row_target_ontologies"] == ["LOINC", "HPO", "RxNorm"]
 
 
+def test_start_batch_passes_optional_history_session_id(monkeypatch):
+    captured = {}
+
+    def fake_start_batch_job(**kwargs):
+        captured.update(kwargs)
+        return "job-1"
+
+    monkeypatch.setattr("app.api.batch.start_batch_job", fake_start_batch_job)
+
+    response = client.post(
+        "/api/batch/start",
+        data={
+            **_form_data(_OMITTED),
+            "session_id": "session-1",
+        },
+        files=_csv_upload(),
+    )
+
+    assert response.status_code == 200
+    assert captured["session_id"] == "session-1"
+
+
 def test_start_batch_accepts_per_row_efo_target_ontology_column(monkeypatch):
     captured = {}
 
@@ -486,7 +508,7 @@ def test_upload_preview_existing_xlsx_support_still_works():
     assert response.json()["columns"] == ["field_name", "label", "clinical_area"]
 
 
-def test_cancel_running_batch_marks_interrupted_and_discards_results():
+def test_cancel_running_batch_marks_interrupted_and_preserves_results():
     job_id = "test-running-cancel"
     _batch_jobs[job_id] = {
         "status": "running",
@@ -517,7 +539,8 @@ def test_cancel_running_batch_marks_interrupted_and_discards_results():
         payload = status_response.json()
         assert payload["status"] == "interrupted"
         assert payload["completed"] == 1
-        assert payload["results"] == []
+        assert len(payload["results"]) == 1
+        assert payload["results"][0]["field_name"] == "sbp"
         assert _batch_jobs[job_id]["cancel_requested"] is True
     finally:
         _batch_jobs.pop(job_id, None)

@@ -45,7 +45,10 @@ export function formatRetrievalSource(value: unknown): string {
   return labels[source.toLowerCase()] ?? source;
 }
 
-export function getMappingDetailSections(details: MappingDetailsInput): MappingDetailSection[] {
+export function getMappingDetailSections(
+  details: MappingDetailsInput,
+  explanationLabel = 'Why selected',
+): MappingDetailSection[] {
   const sections: MappingDetailSection[] = [];
   const explanation = getMappingExplanation(details);
   const retrievalSource = formatRetrievalSource(details.retrievalSource);
@@ -53,7 +56,7 @@ export function getMappingDetailSections(details: MappingDetailsInput): MappingD
   const model = cleanText(details.configuredModel) || cleanText(details.metadata?.model);
 
   if (explanation) {
-    sections.push({ label: 'Why selected', value: explanation });
+    sections.push({ label: explanationLabel, value: explanation });
   }
   if (details.retrievalMode !== undefined && details.retrievalMode !== null) {
     sections.push({ label: 'Retrieval method', value: formatRetrievalMode(details.retrievalMode) });

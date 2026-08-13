@@ -17,6 +17,7 @@ def _result(
     term: str = "Seizure",
     ontology: str = "HPO",
     confidence: float = 0.91,
+    alternatives: list | None = None,
 ):
     return SimpleNamespace(
         target_code=code,
@@ -25,7 +26,7 @@ def _result(
         confidence=confidence,
         logic_type="rag",
         notes="Mapped.",
-        alternatives=[],
+        alternatives=alternatives or [],
         metadata=None,
     )
 
@@ -275,6 +276,7 @@ def test_single_mapping_normalizes_planned_unmapped_code(monkeypatch):
         (None, None),
         (["LOINC"], ["LOINC"]),
         (["LOINC", "HPO"], ["LOINC", "HPO"]),
+        (["EFO"], ["EFO"]),
     ],
 )
 def test_single_mapping_passes_target_ontologies_to_mapper(
@@ -304,6 +306,36 @@ def test_single_mapping_passes_target_ontologies_to_mapper(
     )
 
     assert mapper_cls.call_args.kwargs["ontologies"] == expected
+
+
+def test_single_mapping_preserves_imported_efo_native_ontology(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="MONDO:0004975",
+        term="Alzheimer disease",
+        ontology="MONDO",
+        confidence=0.99,
+    )
+    mapper_cls = MagicMock(return_value=mapper_instance)
+    monkeypatch.setattr("llm_ontology_mapper.OntologyMapper", mapper_cls)
+
+    response = mapper_service.map_single_term(
+        SingleMappingRequest(
+            source_term="alzheimer",
+            source_label="Alzheimer disease",
+            target_ontologies=["EFO"],
+        )
+    )
+
+    assert mapper_cls.call_args.kwargs["ontologies"] == ["EFO"]
+    assert response.target_code == "MONDO:0004975"
+    assert response.target_term == "Alzheimer disease"
+    assert response.ontology == "MONDO"
+    assert response.confidence == 0.99
 
 
 def test_single_public_loinc_mapping_uses_validated_user_credentials(monkeypatch):
@@ -592,6 +624,11 @@ def test_batch_mapping_runs_with_planned_mapper_and_normalizes_unmapped(monkeypa
     config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
     _patch_config(monkeypatch, config)
     _patch_planned_dependencies(monkeypatch)
+    monkeypatch.setattr(
+        mapper_service,
+        "get_validated_loinc_credentials",
+        lambda _config: ("loinc-user", "loinc-secret"),
+    )
     mapper_service._batch_jobs.clear()
 
     mapper_instance = MagicMock()
@@ -637,6 +674,87 @@ def test_batch_mapping_runs_with_planned_mapper_and_normalizes_unmapped(monkeypa
     assert "use_rag" not in kwargs
     assert "ontology_retriever" not in kwargs
     assert mapper_instance.map_term.call_count == 2
+
+
+def test_batch_mapping_preserves_original_row_and_passes_source_description(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    monkeypatch.setattr(
+        mapper_service,
+        "get_validated_loinc_credentials",
+        lambda _config: ("loinc-user", "loinc-secret"),
+    )
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="LOINC:8480-6",
+        term="Systolic blood pressure",
+        ontology="LOINC",
+    )
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[
+            {
+                "source_variable": "dup",
+                "source_label": "Systolic BP",
+                "source_description": "Measured seated after five minutes.",
+                "target_ontology": "loinc",
+                "custom metadata": "alpha",
+            },
+            {
+                "source_variable": "dup",
+                "source_label": "Systolic BP",
+                "source_description": "Measured standing.",
+                "target_ontology": "loinc",
+                "custom metadata": "beta",
+            },
+        ],
+        column_map={
+            "field_name": "source_variable",
+            "label": "source_label",
+            "description": "source_description",
+        },
+        clinical_area=None,
+        target_ontologies=None,
+        auto_accept_threshold=0.85,
+        target_ontology_column="target_ontology",
+        row_target_ontologies=["LOINC", "LOINC"],
+        original_columns=[
+            "source_variable",
+            "source_label",
+            "source_description",
+            "target_ontology",
+            "custom metadata",
+        ],
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    rows = job["results"]
+
+    assert rows[0].original_row["custom metadata"] == "alpha"
+    assert rows[1].original_row["custom metadata"] == "beta"
+    assert rows[0].original_columns == [
+        "source_variable",
+        "source_label",
+        "source_description",
+        "target_ontology",
+        "custom metadata",
+    ]
+    assert rows[0].source_description == "Measured seated after five minutes."
+    assert rows[0].requested_target_ontology == "LOINC"
+    assert mapper_instance.map_term.call_args_list[0].kwargs["source_description"] == (
+        "Measured seated after five minutes."
+    )
+    assert mapper_instance.map_term.call_args_list[1].kwargs["source_description"] == (
+        "Measured standing."
+    )
 
 
 def test_batch_public_loinc_mapping_uses_validated_user_credentials(monkeypatch):
@@ -903,6 +1021,116 @@ def test_batch_mapping_uses_per_row_target_ontology_over_global_selection(monkey
     ]
     assert mapper_instances[("LOINC",)].map_term.call_count == 2
     assert mapper_instances[("HPO",)].map_term.call_count == 1
+
+
+def test_batch_mapping_preserves_imported_efo_native_ontology(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="MONDO:0004975",
+        term="Alzheimer disease",
+        ontology="MONDO",
+        confidence=0.99,
+    )
+    mapper_cls = MagicMock(return_value=mapper_instance)
+    monkeypatch.setattr("llm_ontology_mapper.OntologyMapper", mapper_cls)
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "ad", "label": "Alzheimer disease"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area=None,
+        target_ontologies=["EFO"],
+        auto_accept_threshold=0.85,
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    row = job["results"][0]
+    assert job["status"] == "done"
+    assert job["target_ontologies"] == ["EFO"]
+    assert mapper_cls.call_args.kwargs["ontologies"] == ["EFO"]
+    assert row.suggested_code == "MONDO:0004975"
+    assert row.suggested_term == "Alzheimer disease"
+    assert row.ontology == "MONDO"
+    assert row.confidence == 0.99
+    assert row.decision == "accepted"
+
+
+def test_batch_mapping_preserves_efo_alternatives_from_imported_ontologies(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="EFO:0004340",
+        term="body mass index",
+        ontology="EFO",
+        alternatives=[
+            SimpleNamespace(
+                code="MONDO:0004975",
+                term="Alzheimer disease",
+                ontology="MONDO",
+                confidence=0.87,
+                source="rag",
+                explanation="EFO imported candidate.",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "bmi", "label": "Body mass index"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area=None,
+        target_ontologies=["EFO"],
+        auto_accept_threshold=0.85,
+    )
+
+    row = mapper_service.get_batch_job(job_id)["results"][0]
+    assert [(alt.code, alt.term, alt.ontology) for alt in row.alternatives] == [
+        ("MONDO:0004975", "Alzheimer disease", "MONDO")
+    ]
+
+
+def test_batch_mapping_uses_per_row_efo_target_ontology(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="EFO:0004340",
+        term="body mass index",
+        ontology="EFO",
+    )
+    mapper_cls = MagicMock(return_value=mapper_instance)
+    monkeypatch.setattr("llm_ontology_mapper.OntologyMapper", mapper_cls)
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "bmi", "label": "Body mass index"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area=None,
+        target_ontologies=["MONDO"],
+        auto_accept_threshold=0.85,
+        target_ontology_column="target_ontology",
+        row_target_ontologies=["EFO"],
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    assert job["results"][0].ontology == "EFO"
+    assert mapper_cls.call_args.kwargs["ontologies"] == ["EFO"]
 
 
 def test_batch_mapping_converts_wrong_ontology_result_to_unmapped(monkeypatch):

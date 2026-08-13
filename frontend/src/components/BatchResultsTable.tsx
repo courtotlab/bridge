@@ -1,5 +1,6 @@
 import { Fragment } from 'react';
 import type { AlternativeResult, BatchRowResult } from '../types/mapping';
+import { getMappingExplanation } from '../utils/mappingDetails';
 import MappingDetailsTooltip from './MappingDetailsTooltip';
 
 export function batchConfidenceTier(confidence: number): 'high' | 'med' | 'low' {
@@ -16,6 +17,13 @@ function batchConfidenceLabel(confidence: number): string {
 
 export function isUnmappedCode(code: string): boolean {
   return code.toUpperCase().includes('UNMAPPED');
+}
+
+function isTooltipEligibleUnmapped(row: BatchRowResult): boolean {
+  return isUnmappedCode(row.suggested_code)
+    && row.suggested_term.trim().toUpperCase() === 'UNMAPPED'
+    && row.confidence <= 0
+    && Boolean(getMappingExplanation({ notes: row.notes }));
 }
 
 export function BatchConfidenceBadge({ confidence }: { confidence: number }) {
@@ -154,6 +162,7 @@ export default function BatchResultsTable({
             {filteredRows.map((row) => {
               const decision = getDecision(row);
               const isExpanded = expandedRows.has(row.row_index);
+              const showUnmappedTooltip = isTooltipEligibleUnmapped(row);
               return (
                 <Fragment key={`batch-row-group-${row.row_index}`}>
                   <tr key={`row-${row.row_index}`} className="batch-table-row">
@@ -165,7 +174,21 @@ export default function BatchResultsTable({
                     </td>
                     <td>
                       {isUnmappedCode(row.suggested_code) ? (
-                        <span className="batch-unmapped-code">UNMAPPED</span>
+                        <span className="batch-code-main">
+                          <span className="batch-unmapped-code">UNMAPPED</span>
+                          {showUnmappedTooltip && (
+                            <MappingDetailsTooltip
+                              code="UNMAPPED"
+                              explanationLabel="Why unmapped"
+                              details={{
+                                notes: row.notes,
+                                retrievalMode: row.retrieval_mode,
+                                configuredProvider: row.configured_provider,
+                                configuredModel: row.configured_model,
+                              }}
+                            />
+                          )}
+                        </span>
                       ) : (
                         <>
                           <div className="batch-code-main">

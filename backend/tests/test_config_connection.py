@@ -2,6 +2,7 @@
 
 import pytest
 import requests as _requests
+from fastapi.testclient import TestClient
 
 from app.api import config as config_api
 from app.api.config import (
@@ -12,8 +13,11 @@ from app.api.config import (
     _test_ollama_cloud,
     _test_public_retrieval,
 )
+from app.main import app
 from app.models.config import AppConfig, ConnectionTestResponse
 from app.storage import config_store
+
+client = TestClient(app)
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -50,6 +54,22 @@ def _mock_chat_ok():
     resp = _requests.Response()
     resp.status_code = 200
     resp._content = b'{"message": {"content": "OK"}}'
+    return resp
+
+
+def _mock_chat_error(message: str = "load failed"):
+    resp = _requests.Response()
+    resp.status_code = 500
+    resp._content = f'{{"error": "{message}"}}'.encode()
+    return resp
+
+
+def _mock_ps(models=()):
+    resp = _requests.Response()
+    resp.status_code = 200
+    resp._content = (
+        '{"models": [' + ", ".join(f'{{"name": "{m}"}}' for m in models) + "]}"
+    ).encode()
     return resp
 
 
@@ -103,14 +123,14 @@ class TestOllamaCloudNoModel:
             return_value=_mock_tags_ok(["llama3.2", "mistral"]),
         )
         result = _test_ollama_cloud(_cfg(model=""))
-        assert result.success is True
+        assert result.success is False
         assert "Select a model" in result.message
         assert result.available_models == ["llama3.2", "mistral"]
 
-    def test_empty_model_validation_level_is_reachability(self, mocker):
+    def test_empty_model_validation_level_is_discovery(self, mocker):
         mocker.patch("app.api.config._requests.get", return_value=_mock_tags_ok())
         result = _test_ollama_cloud(_cfg(model=""))
-        assert result.validation_level == "reachability"
+        assert result.validation_level == "discovery"
 
     def test_empty_model_does_not_claim_api_key_valid(self, mocker):
         mocker.patch("app.api.config._requests.get", return_value=_mock_tags_ok())
@@ -119,12 +139,12 @@ class TestOllamaCloudNoModel:
         assert "api key" not in lower
         assert "key works" not in lower
 
-    def test_empty_model_no_api_key_still_lists_models(self, mocker):
-        mocker.patch("app.api.config._requests.get", return_value=_mock_tags_ok())
+    def test_empty_model_no_api_key_fails_before_listing_models(self, mocker):
+        mock_get = mocker.patch("app.api.config._requests.get")
         result = _test_ollama_cloud(_cfg(model="", api_key=None))
-        assert result.success is True
-        assert result.available_models is not None
-        assert result.validation_level == "reachability"
+        assert result.success is False
+        assert result.error_type == "invalid_api_key"
+        mock_get.assert_not_called()
 
     def test_tags_http_error_fails(self, mocker):
         mocker.patch(
@@ -153,7 +173,7 @@ class TestOllamaCloudWithModel:
         mocker.patch("app.api.config._requests.post", return_value=_mock_chat_ok())
         result = _test_ollama_cloud(_cfg(model="llama3.2"))
         assert result.success is True
-        assert "API key works" in result.message
+        assert "selected model is usable" in result.message
         assert "llama3.2" in result.message
 
     def test_successful_chat_validation_level_is_generation(self, mocker):
@@ -176,7 +196,7 @@ class TestOllamaCloudWithModel:
         )
         result = _test_ollama_cloud(_cfg(model="llama3.2"))
         assert result.success is False
-        assert "401" in result.message
+        assert result.error_type == "invalid_api_key"
 
     def test_403_from_chat_fails_with_clear_message(self, mocker):
         mocker.patch("app.api.config._requests.get", return_value=_mock_tags_ok())
@@ -186,7 +206,7 @@ class TestOllamaCloudWithModel:
         )
         result = _test_ollama_cloud(_cfg(model="llama3.2"))
         assert result.success is False
-        assert "403" in result.message
+        assert result.error_type == "model_unavailable"
 
     def test_404_from_chat_signals_model_not_found(self, mocker):
         mocker.patch("app.api.config._requests.get", return_value=_mock_tags_ok())
@@ -196,7 +216,7 @@ class TestOllamaCloudWithModel:
         )
         result = _test_ollama_cloud(_cfg(model="bad-model"))
         assert result.success is False
-        assert "not found" in result.message.lower() or "404" in result.message
+        assert result.error_type == "model_unavailable"
 
     def test_chat_uses_bearer_auth(self, mocker):
         mocker.patch("app.api.config._requests.get", return_value=_mock_tags_ok())
@@ -224,8 +244,10 @@ class TestOllamaCloudWithModel:
 class TestOllamaLocal:
     def test_uses_configured_base_url(self, mocker):
         mock_get = mocker.patch(
-            "app.api.config._requests.get", return_value=_mock_tags_ok()
+            "app.api.config._requests.get",
+            side_effect=[_mock_tags_ok(["llama3.2"]), _mock_ps()],
         )
+        mocker.patch("app.api.config._requests.post", return_value=_mock_chat_ok())
         cfg = AppConfig(
             provider="ollama",
             model="llama3.2",
@@ -233,16 +255,21 @@ class TestOllamaLocal:
         )
         result = _test_ollama(cfg)
         assert result.success is True
-        url = mock_get.call_args[0][0]
-        assert url == "http://my-server:11434/api/tags"
+        urls = [call.args[0] for call in mock_get.call_args_list]
+        assert urls == [
+            "http://my-server:11434/api/tags",
+            "http://my-server:11434/api/ps",
+        ]
 
     def test_no_auth_header_sent(self, mocker):
         mock_get = mocker.patch(
-            "app.api.config._requests.get", return_value=_mock_tags_ok()
+            "app.api.config._requests.get",
+            side_effect=[_mock_tags_ok(["llama3.2"]), _mock_ps()],
         )
+        mocker.patch("app.api.config._requests.post", return_value=_mock_chat_ok())
         _test_ollama(AppConfig(provider="ollama", model="llama3.2"))
-        _, kwargs = mock_get.call_args
-        assert "Authorization" not in (kwargs.get("headers") or {})
+        for call in mock_get.call_args_list:
+            assert "Authorization" not in (call.kwargs.get("headers") or {})
 
     def test_connection_failure_returns_false(self, mocker):
         mocker.patch(
@@ -252,10 +279,241 @@ class TestOllamaLocal:
         result = _test_ollama(AppConfig(provider="ollama", model="llama3.2"))
         assert result.success is False
 
-    def test_validation_level_not_set_for_local(self, mocker):
-        mocker.patch("app.api.config._requests.get", return_value=_mock_tags_ok())
+    def test_successful_local_validation_level_is_generation(self, mocker):
+        mocker.patch(
+            "app.api.config._requests.get",
+            side_effect=[_mock_tags_ok(["llama3.2"]), _mock_ps()],
+        )
+        mocker.patch("app.api.config._requests.post", return_value=_mock_chat_ok())
         result = _test_ollama(AppConfig(provider="ollama", model="llama3.2"))
-        assert result.validation_level is None
+        assert result.validation_level == "generation"
+
+    def test_selected_model_is_used_for_chat_probe(self, mocker):
+        mocker.patch(
+            "app.api.config._requests.get",
+            side_effect=[
+                _mock_tags_ok(["gpt-oss:120b", "gemma3:270m"]),
+                _mock_ps(),
+            ],
+        )
+        mock_post = mocker.patch(
+            "app.api.config._requests.post",
+            return_value=_mock_chat_ok(),
+        )
+
+        result = _test_ollama(
+            AppConfig(provider="ollama", model="gpt-oss:120b")
+        )
+
+        assert result.success is True
+        assert mock_post.call_args.kwargs["json"]["model"] == "gpt-oss:120b"
+
+    def test_unrelated_resident_model_does_not_override_selected_model(self, mocker):
+        mocker.patch(
+            "app.api.config._requests.get",
+            side_effect=[
+                _mock_tags_ok(["gpt-oss:120b", "gemma3:270m"]),
+                _mock_ps(["gemma3:270m"]),
+            ],
+        )
+        mock_post = mocker.patch(
+            "app.api.config._requests.post",
+            return_value=_mock_chat_ok(),
+        )
+
+        result = _test_ollama(
+            AppConfig(provider="ollama", model="gpt-oss:120b")
+        )
+
+        assert result.success is True
+        assert mock_post.call_args.kwargs["json"]["model"] == "gpt-oss:120b"
+        assert mock_post.call_args.kwargs["timeout"] == 120
+
+    def test_selected_model_already_loaded_uses_warm_timeout(self, mocker):
+        mocker.patch(
+            "app.api.config._requests.get",
+            side_effect=[
+                _mock_tags_ok(["gpt-oss:120b", "gemma3:270m"]),
+                _mock_ps(["gpt-oss:120b"]),
+            ],
+        )
+        mock_post = mocker.patch(
+            "app.api.config._requests.post",
+            return_value=_mock_chat_ok(),
+        )
+
+        result = _test_ollama(
+            AppConfig(provider="ollama", model="gpt-oss:120b")
+        )
+
+        assert result.success is True
+        assert result.model_ok is True
+        assert mock_post.call_args.kwargs["json"]["model"] == "gpt-oss:120b"
+        assert mock_post.call_args.kwargs["timeout"] == 30
+
+    def test_selected_model_missing_fails_without_chat_probe(self, mocker):
+        mocker.patch(
+            "app.api.config._requests.get",
+            return_value=_mock_tags_ok(["gemma3:270m"]),
+        )
+        mock_post = mocker.patch("app.api.config._requests.post")
+
+        result = _test_ollama(
+            AppConfig(provider="ollama", model="gpt-oss:120b")
+        )
+
+        assert result.success is False
+        assert result.model_ok is False
+        assert result.error_type == "model_unavailable"
+        assert result.available_models == ["gemma3:270m"]
+        assert "gpt-oss:120b" in result.message
+        mock_post.assert_not_called()
+
+    def test_selected_model_inference_failure_fails_without_fallback(self, mocker):
+        mocker.patch(
+            "app.api.config._requests.get",
+            side_effect=[
+                _mock_tags_ok(["gpt-oss:120b", "gemma3:270m"]),
+                _mock_ps(["gemma3:270m"]),
+            ],
+        )
+        mock_post = mocker.patch(
+            "app.api.config._requests.post",
+            return_value=_mock_chat_error("load failed"),
+        )
+
+        result = _test_ollama(
+            AppConfig(provider="ollama", model="gpt-oss:120b")
+        )
+
+        assert result.success is False
+        assert result.model_ok is False
+        assert mock_post.call_count == 1
+        assert mock_post.call_args.kwargs["json"]["model"] == "gpt-oss:120b"
+        assert "load failed" in result.message
+
+    def test_selected_model_timeout_fails(self, mocker):
+        mocker.patch(
+            "app.api.config._requests.get",
+            side_effect=[
+                _mock_tags_ok(["gpt-oss:120b", "gemma3:270m"]),
+                _mock_ps(),
+            ],
+        )
+        mocker.patch(
+            "app.api.config._requests.post",
+            side_effect=_requests.Timeout("slow model"),
+        )
+
+        result = _test_ollama(
+            AppConfig(provider="ollama", model="gpt-oss:120b")
+        )
+
+        assert result.success is False
+        assert result.model_ok is False
+        assert result.error_type == "model_test_failed"
+        assert "gpt-oss:120b" in result.message
+        assert "did not respond" in result.message
+
+    def test_ps_failure_is_best_effort_and_selected_model_is_still_tested(self, mocker):
+        def fake_get(url, **kwargs):
+            if url.endswith("/api/tags"):
+                return _mock_tags_ok(["gpt-oss:120b"])
+            if url.endswith("/api/ps"):
+                raise ConnectionError("ps unavailable")
+            raise AssertionError(f"unexpected URL {url}")
+
+        mocker.patch("app.api.config._requests.get", side_effect=fake_get)
+        mock_post = mocker.patch(
+            "app.api.config._requests.post",
+            return_value=_mock_chat_ok(),
+        )
+
+        result = _test_ollama(
+            AppConfig(provider="ollama", model="gpt-oss:120b")
+        )
+
+        assert result.success is True
+        assert mock_post.call_args.kwargs["json"]["model"] == "gpt-oss:120b"
+
+
+class TestOllamaLocalModelDiscovery:
+    def test_discovers_models_from_requested_base_url(self, mocker):
+        mock_get = mocker.patch(
+            "app.api.config._requests.get",
+            return_value=_mock_tags_ok(["gpt-oss:120b", "gemma3:270m"]),
+        )
+        mock_post = mocker.patch("app.api.config._requests.post")
+
+        response = client.post(
+            "/api/config/ollama/models",
+            json={"base_url": "http://localhost:11528"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "models": ["gpt-oss:120b", "gemma3:270m"],
+            "warning": None,
+            "error": None,
+        }
+        mock_get.assert_called_once_with(
+            "http://localhost:11528/api/tags",
+            timeout=config_api._OLLAMA_TAGS_TIMEOUT_SECONDS,
+        )
+        mock_post.assert_not_called()
+
+    def test_discovery_unreachable_fails_cleanly(self, mocker):
+        mocker.patch(
+            "app.api.config._requests.get",
+            side_effect=ConnectionError("refused"),
+        )
+        mock_post = mocker.patch("app.api.config._requests.post")
+
+        response = client.post(
+            "/api/config/ollama/models",
+            json={"base_url": "http://localhost:11528"},
+        )
+
+        assert response.status_code == 503
+        assert response.json()["detail"] == (
+            "Could not load models from this Ollama server."
+        )
+        mock_post.assert_not_called()
+
+    def test_discovery_handles_no_models(self, mocker):
+        mocker.patch(
+            "app.api.config._requests.get",
+            return_value=_mock_tags_ok([]),
+        )
+        mock_post = mocker.patch("app.api.config._requests.post")
+
+        response = client.post(
+            "/api/config/ollama/models",
+            json={"base_url": "http://localhost:11528"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["models"] == []
+        mock_post.assert_not_called()
+
+    def test_discovery_does_not_call_ps_or_chat(self, mocker):
+        requested_urls: list[str] = []
+
+        def fake_get(url, **kwargs):
+            requested_urls.append(url)
+            return _mock_tags_ok(["gpt-oss:120b"])
+
+        mocker.patch("app.api.config._requests.get", side_effect=fake_get)
+        mock_post = mocker.patch("app.api.config._requests.post")
+
+        response = client.post(
+            "/api/config/ollama/models",
+            json={"base_url": "http://localhost:11528"},
+        )
+
+        assert response.status_code == 200
+        assert requested_urls == ["http://localhost:11528/api/tags"]
+        mock_post.assert_not_called()
 
 
 # ── Candidate retrieval component tests ───────────────────────────────────────

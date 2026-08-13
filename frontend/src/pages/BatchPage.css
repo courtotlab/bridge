@@ -426,6 +426,7 @@
 .batch-unmapped-code {
   color: #9ca3af;
   font-size: 13px;
+  font-weight: 400;
 }
 
 .batch-code-main {

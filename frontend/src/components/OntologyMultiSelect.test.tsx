@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { vi } from 'vitest';
 
-import { ONTOLOGY_OPTIONS } from '../constants/ontologies';
+import { getOntologyDisplayName, ONTOLOGY_OPTIONS } from '../constants/ontologies';
 import OntologyMultiSelect from './OntologyMultiSelect';
 
 const helperText =
@@ -37,6 +37,11 @@ describe('OntologyMultiSelect', () => {
     for (const option of ONTOLOGY_OPTIONS) {
       expect(screen.getByRole('checkbox', { name: option.label })).not.toBeChecked();
     }
+  });
+
+  it('exposes EFO in the mapping ontology catalog', () => {
+    expect(ONTOLOGY_OPTIONS).toContainEqual({ value: 'EFO', label: 'EFO' });
+    expect(getOntologyDisplayName('EFO')).toBe('Experimental Factor Ontology');
   });
 
   it('selects one ontology', async () => {

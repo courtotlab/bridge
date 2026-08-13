@@ -1,4 +1,3 @@
-import csv
 import io
 import json
 import logging
@@ -18,6 +17,7 @@ from app.services.mapper_service import (
     start_batch_job,
     update_batch_decision,
 )
+from app.utils.batch_export import build_batch_rows_csv
 from app.utils.ontology import (
     SUPPORTED_TARGET_ONTOLOGIES,
     normalize_target_ontologies,
@@ -215,6 +215,7 @@ async def start_batch(
         auto_accept_threshold=auto_accept_threshold,
         target_ontology_column=target_ontology_column,
         row_target_ontologies=row_target_ontologies,
+        original_columns=list(df.columns),
     )
     return {"job_id": job_id, "total": len(records)}
 
@@ -280,39 +281,9 @@ def export_results(job_id: str):
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
 
-    rows = [
-        {
-            "field_name": r.field_name,
-            "label": r.label or "",
-            "suggested_code": r.suggested_code,
-            "suggested_term": r.suggested_term,
-            "ontology": r.ontology,
-            "confidence": f"{r.confidence:.0%}",
-            "decision": r.decision,
-        }
-        for r in job["results"]
-    ]
-
-    buf = io.StringIO()
-    fieldnames = (
-        list(rows[0].keys())
-        if rows
-        else [
-            "field_name",
-            "label",
-            "suggested_code",
-            "suggested_term",
-            "ontology",
-            "confidence",
-            "decision",
-        ]
-    )
-    writer = csv.DictWriter(buf, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(rows)
-    buf.seek(0)
+    csv_content = build_batch_rows_csv(job["results"])
     return StreamingResponse(
-        iter([buf.read()]),
+        iter([csv_content]),
         media_type="text/csv",
         headers={
             "Content-Disposition": f'attachment; filename="batch_results_{job_id[:8]}.csv"'

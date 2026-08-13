@@ -1,4 +1,11 @@
-import type { AnthropicModelsResponse, AppConfig, ConfigStatusResponse, ConnectionTestResponse, OpenAIModelsResponse } from '../types/config';
+import type {
+  AnthropicModelsResponse,
+  AppConfig,
+  ConfigStatusResponse,
+  ConnectionTestResponse,
+  OllamaModelsResponse,
+  OpenAIModelsResponse,
+} from '../types/config';
 import client from './client';
 
 export async function getConfig(): Promise<AppConfig> {
@@ -50,6 +57,11 @@ export async function testConnection(config: AppConfig): Promise<ConnectionTestR
 
 export async function getOllamaModels(): Promise<string[]> {
   const { data } = await client.get<string[]>('/config/ollama-models');
+  return data;
+}
+
+export async function discoverOllamaModels(base_url: string): Promise<OllamaModelsResponse> {
+  const { data } = await client.post<OllamaModelsResponse>('/config/ollama/models', { base_url });
   return data;
 }
 

@@ -11,6 +11,7 @@ from app.models.session import InputSummary
         (None, None),
         ([], None),
         ("LOINC", ["LOINC"]),
+        ("efo", ["EFO"]),
         (["LOINC", "HPO"], ["LOINC", "HPO"]),
         (["LOINC", " HPO ", "loinc", ""], ["LOINC", "HPO"]),
         ("Auto-detect", None),

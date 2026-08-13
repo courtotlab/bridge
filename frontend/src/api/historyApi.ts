@@ -18,3 +18,7 @@ export async function deleteSession(id: string): Promise<void> {
 export function exportUrl(id: string): string {
   return `http://localhost:8000/api/history/${id}/export`;
 }
+
+export function batchCsvExportUrl(id: string): string {
+  return `http://localhost:8000/api/history/${id}/batch-csv`;
+}

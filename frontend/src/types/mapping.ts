@@ -55,6 +55,10 @@ export interface BatchRowResult {
   row_index: number;
   field_name: string;
   label?: string;
+  source_description?: string | null;
+  original_row?: Record<string, unknown>;
+  original_columns?: string[];
+  requested_target_ontology?: string | null;
   suggested_code: string;
   suggested_term: string;
   ontology: string;

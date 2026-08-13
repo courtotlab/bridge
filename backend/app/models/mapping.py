@@ -1,7 +1,7 @@
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from app.utils.ontology import normalize_target_ontologies
 
@@ -84,6 +84,10 @@ class BatchRowResult(BaseModel):
     row_index: int
     field_name: str
     label: str | None = None
+    source_description: str | None = None
+    original_row: dict[str, Any] = Field(default_factory=dict)
+    original_columns: list[str] = Field(default_factory=list)
+    requested_target_ontology: str | None = None
     suggested_code: str
     suggested_term: str
     ontology: str

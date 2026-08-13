@@ -66,3 +66,7 @@ class ModelsListResponse(BaseModel):
     models: list[str]
     warning: str | None = None
     error: str | None = None
+
+
+class OllamaModelsRequest(BaseModel):
+    base_url: str

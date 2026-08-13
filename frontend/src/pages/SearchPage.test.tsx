@@ -160,6 +160,61 @@ describe('SearchPage retrieval method display', () => {
     expect(stored.bestMatch?.retrieval_mode).toBe('disabled');
   });
 
+  it('sends EFO through the existing single-term target ontology payload', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(mappingResponse({
+      target_code: 'EFO:0004340',
+      target_term: 'body mass index',
+      ontology: 'EFO',
+    }));
+    const { user } = setup();
+
+    await user.click(screen.getByRole('checkbox', { name: 'EFO' }));
+    await submitSearch(user);
+
+    await waitFor(() => expect(mocks.mapSingleTerm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target_ontologies: ['EFO'],
+      }),
+    ));
+    expect(await screen.findByText('EFO:0004340 · body mass index')).toBeInTheDocument();
+    expect(screen.getByText('Ontology: Experimental Factor Ontology')).toBeInTheDocument();
+  });
+
+  it('renders imported EFO mappings with the returned native ontology unchanged', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(mappingResponse({
+      target_code: 'MONDO:0004975',
+      target_term: 'Alzheimer disease',
+      ontology: 'MONDO',
+      confidence: 0.99,
+      alternatives: [
+        {
+          code: 'EFO:0000249',
+          term: 'Alzheimer disease',
+          ontology: 'EFO',
+          confidence: 0.86,
+          source: 'rag',
+        },
+      ],
+    }));
+    const { user } = setup();
+
+    await user.click(screen.getByRole('checkbox', { name: 'EFO' }));
+    await submitSearch(user);
+
+    expect(await screen.findByText('MONDO:0004975 · Alzheimer disease')).toBeInTheDocument();
+    expect(screen.getByText('Ontology: Monarch Disease Ontology')).toBeInTheDocument();
+    expect(screen.getByText('EFO:0000249')).toBeInTheDocument();
+
+    await waitFor(() => expect(mocks.completeSession).toHaveBeenCalled());
+    const snapshot = mocks.completeSession.mock.calls[0][2] as SingleMappingResponse;
+    expect(snapshot.ontology).toBe('MONDO');
+    expect(snapshot.target_code).toBe('MONDO:0004975');
+    expect(snapshot.alternatives[0]).toEqual(expect.objectContaining({
+      code: 'EFO:0000249',
+      ontology: 'EFO',
+    }));
+  });
+
   it('uses accessible non-native tooltip triggers for result metadata', async () => {
     mocks.mapSingleTerm.mockResolvedValue(mappingResponse({ retrieval_mode: 'public' }));
     const { user } = setup();

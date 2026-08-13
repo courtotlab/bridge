@@ -285,6 +285,28 @@ describe('BatchPage file upload formats', () => {
       }),
     ));
   });
+
+  it('sends EFO through the normal batch target ontology payload', async () => {
+    const { user, input } = setup();
+    const file = fileNamed('data.csv', 'text/csv');
+
+    await user.upload(input, file);
+    await waitFor(() => {
+      expect(screen.getAllByText('data.csv').length).toBeGreaterThan(0);
+    });
+
+    const selectors = screen.getAllByRole('combobox');
+    await user.selectOptions(selectors[selectors.length - 1], '');
+    await user.click(screen.getByRole('checkbox', { name: 'EFO' }));
+    await user.click(screen.getByRole('button', { name: /start mapping/i }));
+
+    await waitFor(() => expect(startBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        file,
+        targetOntologies: ['EFO'],
+      }),
+    ));
+  });
 });
 
 describe('BatchPage column auto-detection', () => {
@@ -504,13 +526,62 @@ describe('BatchPage mapping details tooltips', () => {
     expect(tooltip).not.toHaveTextContent('[object Object]');
   });
 
-  it('does not show mapping details for unmapped results or alternatives without their own details', async () => {
+  it('shows mapper-generated unmapped explanations in the shared tooltip', async () => {
     const row = mappedRow({
       suggested_code: 'UNMAPPED',
       suggested_term: 'UNMAPPED',
       ontology: '',
       confidence: 0,
       decision: 'rejected',
+      notes: 'None of the retrieved candidates accurately represent the requested clinical concept.',
+    });
+    await renderCompletedBatchReview(batchStatus([row]));
+
+    expect(screen.getByText('UNMAPPED')).toBeInTheDocument();
+
+    const trigger = await screen.findByRole('button', {
+      name: 'View mapping details for UNMAPPED',
+    });
+    const tooltip = document.getElementById(trigger.getAttribute('aria-describedby') ?? '');
+
+    expect(tooltip).toHaveTextContent('Why unmapped');
+    expect(tooltip).toHaveTextContent(
+      'None of the retrieved candidates accurately represent the requested clinical concept.',
+    );
+    expect(tooltip).not.toHaveTextContent('Why selected');
+  });
+
+  it('reveals mapper-generated unmapped details on keyboard focus', async () => {
+    const row = mappedRow({
+      suggested_code: 'UNMAPPED',
+      suggested_term: 'UNMAPPED',
+      ontology: '',
+      confidence: 0,
+      decision: 'rejected',
+      notes: 'No candidates were provided for reranking.',
+    });
+    await renderCompletedBatchReview(batchStatus([row]));
+
+    const trigger = await screen.findByRole('button', {
+      name: 'View mapping details for UNMAPPED',
+    });
+    const tooltip = document.getElementById(trigger.getAttribute('aria-describedby') ?? '');
+
+    fireEvent.focus(trigger);
+
+    expect(trigger).toHaveAttribute('type', 'button');
+    expect(trigger).toHaveAttribute('aria-expanded', 'true');
+    expect(tooltip).toHaveClass('info-tooltip-bubble--visible');
+  });
+
+  it('keeps unmapped results without notes plain and omits alternative details without their own details', async () => {
+    const row = mappedRow({
+      suggested_code: 'UNMAPPED',
+      suggested_term: 'UNMAPPED',
+      ontology: '',
+      confidence: 0,
+      decision: 'rejected',
+      notes: undefined,
       alternatives: [
         {
           code: 'HP:0000001',
@@ -530,6 +601,41 @@ describe('BatchPage mapping details tooltips', () => {
 
     expect(screen.queryByRole('button', {
       name: 'View mapping details for HP:0000001',
+    })).not.toBeInTheDocument();
+  });
+
+  it('does not expose per-row mapping errors as mapper unmapped explanations', async () => {
+    const row = mappedRow({
+      suggested_code: 'UNMAPPED',
+      suggested_term: 'planner exploded',
+      ontology: '',
+      confidence: 0,
+      decision: 'rejected',
+      notes: 'planner exploded',
+    });
+    await renderCompletedBatchReview(batchStatus([row]));
+
+    expect(screen.getByText('UNMAPPED')).toBeInTheDocument();
+    expect(screen.queryByRole('button', {
+      name: 'View mapping details for UNMAPPED',
+    })).not.toBeInTheDocument();
+    expect(screen.queryByText('planner exploded')).not.toBeInTheDocument();
+  });
+
+  it('does not relabel allow-list demotion selected-candidate notes as unmapped reasoning', async () => {
+    const row = mappedRow({
+      suggested_code: 'UNMAPPED',
+      suggested_term: 'UNMAPPED',
+      ontology: '',
+      confidence: 0.91,
+      decision: 'rejected',
+      notes: 'Selected because this candidate matched the source label.',
+    });
+    await renderCompletedBatchReview(batchStatus([row]));
+
+    expect(screen.getByText('UNMAPPED')).toBeInTheDocument();
+    expect(screen.queryByRole('button', {
+      name: 'View mapping details for UNMAPPED',
     })).not.toBeInTheDocument();
   });
 });

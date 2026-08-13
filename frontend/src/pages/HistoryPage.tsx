@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
-import { deleteSession, exportUrl, getSession, getSessions } from '../api/historyApi';
+import { batchCsvExportUrl, deleteSession, exportUrl, getSession, getSessions } from '../api/historyApi';
 import BatchResultsTable from '../components/BatchResultsTable';
 import TermSearchResultView from '../components/TermSearchResultView';
 import ValidationResultsTable from '../components/ValidationResultsTable';
@@ -15,7 +15,6 @@ import type {
   ValidationHistoryDetails,
 } from '../types/session';
 import {
-  downloadBatchRowsCsv,
   downloadTermMappingCsv,
   downloadValidationCsv,
 } from '../utils/csvExport';
@@ -290,10 +289,10 @@ export default function HistoryPage() {
     if (detail.type === 'term_search' && detail.result.best_match) {
       downloadTermMappingCsv(detail.result.best_match, detail.created_at);
     } else if (detail.type === 'batch_map') {
-      const filename = detail.input.filename
-        ? `${String(detail.input.filename).replace(/\.[^.]+$/, '')}_history_results.csv`
-        : 'batch-history-results.csv';
-      downloadBatchRowsCsv(detail.result.rows, filename);
+      const a = document.createElement('a');
+      a.href = batchCsvExportUrl(detail.id);
+      a.download = '';
+      a.click();
     } else if (detail.type === 'validation') {
       downloadValidationCsv(detail.result.results, detail.created_at);
     }

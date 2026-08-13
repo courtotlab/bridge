@@ -4,6 +4,7 @@ _AUTO_VALUES = {"auto", "auto-detect"}
 SUPPORTED_TARGET_ONTOLOGIES = (
     "HPO",
     "MONDO",
+    "EFO",
     "NCIT",
     "LOINC",
     "ICD10",

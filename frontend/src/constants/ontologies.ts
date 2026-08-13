@@ -6,6 +6,7 @@ export interface OntologyOption {
 export const ONTOLOGY_OPTIONS: OntologyOption[] = [
   { value: 'HPO', label: 'HPO' },
   { value: 'MONDO', label: 'MONDO' },
+  { value: 'EFO', label: 'EFO' },
   { value: 'NCIT', label: 'NCIT' },
   { value: 'LOINC', label: 'LOINC' },
   { value: 'ICD10', label: 'ICD10' },
@@ -17,6 +18,7 @@ export const ONTOLOGY_OPTIONS: OntologyOption[] = [
 export const ONTOLOGY_FULL_NAMES: Record<string, string> = {
   HPO: 'Human Phenotype Ontology',
   MONDO: 'Monarch Disease Ontology',
+  EFO: 'Experimental Factor Ontology',
   NCIT: 'NCI Thesaurus',
   LOINC: 'Logical Observation Identifiers Names and Codes',
   ICD10: 'International Classification of Diseases, 10th Revision',

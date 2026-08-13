@@ -1,3 +1,4 @@
+import csv
 import io
 
 import pandas as pd  # type: ignore[import-untyped]
@@ -8,6 +9,10 @@ from app.models.mapping import AlternativeResult, BatchRowResult
 from app.services.mapper_service import _batch_jobs
 
 client = TestClient(app)
+
+
+def _csv_rows(text: str) -> list[dict[str, str]]:
+    return list(csv.DictReader(io.StringIO(text)))
 
 
 def _csv_upload():
@@ -171,6 +176,25 @@ def test_start_batch_one_target_ontology(monkeypatch):
     assert captured["target_ontologies"] == ["LOINC"]
 
 
+def test_start_batch_accepts_efo_target_ontology(monkeypatch):
+    captured = {}
+
+    def fake_start_batch_job(**kwargs):
+        captured.update(kwargs)
+        return "job-1"
+
+    monkeypatch.setattr("app.api.batch.start_batch_job", fake_start_batch_job)
+
+    response = client.post(
+        "/api/batch/start",
+        data=_form_data('["EFO"]'),
+        files=_csv_upload(),
+    )
+
+    assert response.status_code == 200
+    assert captured["target_ontologies"] == ["EFO"]
+
+
 def test_start_batch_multiple_target_ontologies(monkeypatch):
     captured = {}
 
@@ -214,6 +238,32 @@ def test_start_batch_accepts_per_row_target_ontology_column(monkeypatch):
     assert captured["row_target_ontologies"] == ["LOINC", "HPO", "RxNorm"]
 
 
+def test_start_batch_accepts_per_row_efo_target_ontology_column(monkeypatch):
+    captured = {}
+
+    def fake_start_batch_job(**kwargs):
+        captured.update(kwargs)
+        return "job-1"
+
+    monkeypatch.setattr("app.api.batch.start_batch_job", fake_start_batch_job)
+
+    response = client.post(
+        "/api/batch/start",
+        data={
+            **_form_data(_OMITTED),
+            "target_ontology_column": "target_ontology",
+        },
+        files=_csv_upload_with_target_ontology(
+            "field_name,label,target_ontology\n"
+            "bmi,Body mass index,efo\n"
+            "ad,Alzheimer disease,EFO\n"
+        ),
+    )
+
+    assert response.status_code == 200
+    assert captured["row_target_ontologies"] == ["EFO", "EFO"]
+
+
 def test_start_batch_missing_target_ontology_column_returns_422(monkeypatch):
     response = client.post(
         "/api/batch/start",
@@ -251,7 +301,7 @@ def test_start_batch_invalid_per_row_target_ontology_values_return_422(monkeypat
     assert 'Row 2: "LOIN"' in detail
     assert "Row 3: blank" in detail
     assert 'Row 4: "custom"' in detail
-    assert "Supported ontology identifiers: HPO, MONDO, NCIT, LOINC" in detail
+    assert "Supported ontology identifiers: HPO, MONDO, EFO, NCIT, LOINC" in detail
 
 
 def test_start_batch_malformed_target_ontologies_json_returns_400(monkeypatch):
@@ -558,6 +608,43 @@ def test_batch_status_serializes_mapping_details_metadata():
         _batch_jobs.pop(job_id, None)
 
 
+def test_batch_export_preserves_imported_efo_native_ontology():
+    job_id = "test-efo-import-export"
+    _batch_jobs[job_id] = {
+        "status": "done",
+        "total": 1,
+        "completed": 1,
+        "results": [
+            BatchRowResult(
+                row_index=0,
+                field_name="ad",
+                label="Alzheimer disease",
+                suggested_code="MONDO:0004975",
+                suggested_term="Alzheimer disease",
+                ontology="MONDO",
+                confidence=0.99,
+                logic_type="rag",
+                decision="accepted",
+            )
+        ],
+        "target_ontologies": ["EFO"],
+        "cancel_requested": False,
+    }
+
+    try:
+        response = client.get(f"/api/batch/export/{job_id}")
+
+        assert response.status_code == 200
+        rows = _csv_rows(response.text)
+        assert rows[0]["mapped_code"] == "MONDO:0004975"
+        assert rows[0]["mapped_term"] == "Alzheimer disease"
+        assert rows[0]["mapped_ontology"] == "MONDO"
+        assert rows[0]["confidence"] == "99%"
+        assert rows[0]["decision"] == "accepted"
+    finally:
+        _batch_jobs.pop(job_id, None)
+
+
 def test_promote_alternative_updates_row_and_exported_mapping():
     job_id = "test-promote-alternative"
     _batch_jobs[job_id] = {
@@ -615,8 +702,15 @@ def test_promote_alternative_updates_row_and_exported_mapping():
         export_response = client.get(f"/api/batch/export/{job_id}")
 
         assert export_response.status_code == 200
-        assert "HP:0000822,Hypertension,HPO,72%,pending" in export_response.text
-        assert "LOINC:8480-6,Systolic blood pressure,LOINC" not in export_response.text
+        rows = _csv_rows(export_response.text)
+        assert rows[0]["mapped_code"] == "HP:0000822"
+        assert rows[0]["mapped_term"] == "Hypertension"
+        assert rows[0]["mapped_ontology"] == "HPO"
+        assert rows[0]["confidence"] == "72%"
+        assert rows[0]["suggested_explanation"] == "Alternative-specific reasoning."
+        assert rows[0]["alternative_1_code"] == "LOINC:8480-6"
+        assert rows[0]["alternative_1_explanation"] == "Primary explanation."
+        assert rows[0]["decision"] == "pending"
     finally:
         _batch_jobs.pop(job_id, None)
 

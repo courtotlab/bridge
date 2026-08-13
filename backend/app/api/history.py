@@ -38,6 +38,7 @@ from app.storage.session_store import (
     get_all_sessions,
     get_session,
 )
+from app.utils.batch_export import build_batch_rows_csv
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -351,6 +352,26 @@ async def export_session(session_id: str) -> Response:
         content=json.dumps(export_payload, indent=2),
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@router.get("/{session_id}/batch-csv")
+async def export_batch_session_csv(session_id: str) -> Response:
+    try:
+        record = get_session(session_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    if record.type != "batch_map":
+        raise HTTPException(status_code=404, detail="Batch CSV export is only available for batch map sessions")
+
+    detail = _normalize_batch_map(record)
+    csv_content = build_batch_rows_csv(detail.result.rows)
+    stem = record.input_summary.filename.rsplit(".", 1)[0] if record.input_summary.filename else "batch"
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{stem}_history_results.csv"'},
     )
 
 

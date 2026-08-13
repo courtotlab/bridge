@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
   saveConfig: vi.fn(),
   testConnection: vi.fn(),
+  discoverOllamaModels: vi.fn(),
   invalidateRetrievalValidation: vi.fn(),
   getOllamaLoaded: vi.fn(),
   getOpenAIModels: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock('../api/configApi', () => ({
   getConfig: mocks.getConfig,
   saveConfig: mocks.saveConfig,
   testConnection: mocks.testConnection,
+  discoverOllamaModels: mocks.discoverOllamaModels,
   invalidateRetrievalValidation: mocks.invalidateRetrievalValidation,
   getOllamaLoaded: mocks.getOllamaLoaded,
   getOpenAIModels: mocks.getOpenAIModels,
@@ -96,6 +98,9 @@ function setup(config: Partial<AppConfig> = {}) {
   mocks.saveConfig.mockImplementation(async (next: AppConfig) => next);
   if (!mocks.testConnection.getMockImplementation()) {
     mocks.testConnection.mockResolvedValue(connectionResponse());
+  }
+  if (!mocks.discoverOllamaModels.getMockImplementation()) {
+    mocks.discoverOllamaModels.mockResolvedValue({ models: ['llama3.2'] });
   }
   mocks.invalidateRetrievalValidation.mockResolvedValue(undefined);
   mocks.getOllamaLoaded.mockResolvedValue({ resident_model: null });
@@ -445,18 +450,85 @@ describe('SettingsPage connection testing', () => {
     window.removeEventListener('bridge:status-refresh', refreshHandler);
   });
 
-  it('keeps available-model discovery working for Ollama Local', async () => {
-    mocks.testConnection.mockResolvedValue(connectionResponse({
-      available_models: ['mistral', 'llama3.2'],
-      resident_model: 'mistral',
-    }));
-    const { user } = setup({ model: 'missing-model' });
+  it('loads Ollama Local models without Test connection', async () => {
+    mocks.discoverOllamaModels.mockResolvedValue({
+      models: ['gpt-oss:120b', 'gemma3:270m'],
+    });
+    setup({ model: '' });
 
-    await user.click(await screen.findByRole('button', { name: /test connection/i }));
+    const modelSelect = await screen.findByRole('combobox', { name: 'Model' });
 
-    const modelSelect = await screen.findByRole('combobox');
-    expect(within(modelSelect).getByRole('option', { name: 'mistral' })).toBeInTheDocument();
-    expect(within(modelSelect).getByRole('option', { name: 'llama3.2' })).toBeInTheDocument();
-    expect(modelSelect).toHaveValue('mistral');
+    expect(mocks.discoverOllamaModels).toHaveBeenCalledWith('http://localhost:11434');
+    expect(within(modelSelect).getByRole('option', { name: 'gpt-oss:120b' })).toBeInTheDocument();
+    expect(within(modelSelect).getByRole('option', { name: 'gemma3:270m' })).toBeInTheDocument();
+    expect(mocks.testConnection).not.toHaveBeenCalled();
+  });
+
+  it('preserves a saved Ollama Local model when discovery returns it', async () => {
+    mocks.discoverOllamaModels.mockResolvedValue({
+      models: ['gpt-oss:120b', 'gemma3:270m'],
+    });
+    setup({ model: 'gpt-oss:120b' });
+
+    const modelSelect = await screen.findByRole('combobox', { name: 'Model' });
+
+    expect(modelSelect).toHaveValue('gpt-oss:120b');
+  });
+
+  it('does not silently test a stale Ollama Local model missing from discovery', async () => {
+    mocks.discoverOllamaModels.mockResolvedValue({
+      models: ['gpt-oss:120b', 'gemma3:270m'],
+    });
+    const { user } = setup({ model: 'llama3.2' });
+
+    const modelSelect = await screen.findByRole('combobox', { name: 'Model' });
+    expect(modelSelect).toHaveValue('');
+
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+    expect(mocks.testConnection).not.toHaveBeenCalled();
+  });
+
+  it('sends the selected discovered Ollama Local model to Test connection', async () => {
+    mocks.discoverOllamaModels.mockResolvedValue({
+      models: ['gpt-oss:120b', 'gemma3:270m'],
+    });
+    const { user } = setup({ model: '' });
+
+    const modelSelect = await screen.findByRole('combobox', { name: 'Model' });
+    await user.selectOptions(modelSelect, 'gpt-oss:120b');
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+    await waitFor(() => expect(mocks.testConnection).toHaveBeenCalled());
+    const payload = mocks.testConnection.mock.calls[0][0] as AppConfig;
+    expect(payload.model).toBe('gpt-oss:120b');
+  });
+
+  it('rediscovers Ollama Local models after Server URL blur', async () => {
+    mocks.discoverOllamaModels
+      .mockResolvedValueOnce({ models: ['llama3.2'] })
+      .mockResolvedValueOnce({ models: ['gpt-oss:120b'] });
+    const { user } = setup({ model: 'llama3.2' });
+
+    await screen.findByRole('combobox', { name: 'Model' });
+    const serverUrl = screen.getByLabelText('Server URL');
+    await user.clear(serverUrl);
+    await user.type(serverUrl, 'http://localhost:11528');
+    await user.tab();
+
+    await waitFor(() => {
+      expect(mocks.discoverOllamaModels).toHaveBeenLastCalledWith('http://localhost:11528');
+    });
+    const modelSelect = await screen.findByRole('combobox', { name: 'Model' });
+    expect(within(modelSelect).getByRole('option', { name: 'gpt-oss:120b' })).toBeInTheDocument();
+  });
+
+  it('shows Ollama Local discovery failure without running Test connection', async () => {
+    mocks.discoverOllamaModels.mockRejectedValue(new Error('unreachable'));
+    setup({ loinc_username: 'loinc-user' });
+
+    expect(await screen.findByText('Could not load models from this Ollama server.')).toBeInTheDocument();
+    expect(screen.getByLabelText('LOINC username')).toHaveValue('loinc-user');
+    expect(mocks.testConnection).not.toHaveBeenCalled();
   });
 });

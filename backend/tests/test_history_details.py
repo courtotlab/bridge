@@ -1,7 +1,13 @@
 from datetime import datetime, timezone
 
+from fastapi.testclient import TestClient
+
+from app.api import history as history_api
 from app.api.history import normalize_history_details
+from app.main import app
 from app.models.session import EventRecord, InputSummary, SessionRecord
+
+client = TestClient(app)
 
 
 def _record(session_type: str, input_summary: InputSummary, result_snapshot=None):
@@ -168,3 +174,53 @@ def test_failed_detail_uses_human_readable_error_message():
 
     assert detail.failure is not None
     assert detail.failure.message == "Provider timed out"
+
+
+def test_batch_history_csv_uses_enriched_export_serializer(monkeypatch):
+    record = _record(
+        "batch_map",
+        InputSummary(filename="dictionary.csv", row_count=1),
+        {
+            "job_id": "job-1",
+            "total": 1,
+            "completed": 1,
+            "status": "done",
+            "results": [
+                {
+                    "row_index": 0,
+                    "field_name": "sbp",
+                    "label": "Systolic BP",
+                    "source_description": "Measured seated.",
+                    "original_row": {
+                        "source_variable": "sbp",
+                        "source_description": "Measured seated.",
+                        "custom": "alpha",
+                    },
+                    "original_columns": [
+                        "source_variable",
+                        "source_description",
+                        "custom",
+                    ],
+                    "requested_target_ontology": "LOINC",
+                    "suggested_code": "LOINC:8480-6",
+                    "suggested_term": "Systolic blood pressure",
+                    "ontology": "LOINC",
+                    "confidence": 0.92,
+                    "logic_type": "rag",
+                    "decision": "accepted",
+                    "notes": "Strong match.",
+                    "alternatives": [],
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(history_api, "get_session", lambda _session_id: record)
+
+    response = client.get("/api/history/batch_map-1/batch-csv")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert response.text.splitlines()[0].startswith(
+        "source_variable,source_description,custom,target_ontology,mapped_code"
+    )
+    assert "sbp,Measured seated.,alpha,LOINC,LOINC:8480-6" in response.text

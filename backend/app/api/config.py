@@ -10,6 +10,7 @@ from app.models.config import (
     ConfigStatusResponse,
     ConnectionTestResponse,
     ModelsListResponse,
+    OllamaModelsRequest,
 )
 from app.storage.config_store import (
     MASKED_SECRET_SENTINEL,
@@ -43,6 +44,10 @@ router = APIRouter()
 _LOINC_SEARCH_URL = "https://loinc.regenstrief.org/searchapi/loincs"
 _LOINC_TEST_QUERY = "glucose"
 _LOINC_TIMEOUT_SECONDS = 8
+_OLLAMA_TAGS_TIMEOUT_SECONDS = 5
+_OLLAMA_PS_TIMEOUT_SECONDS = 5
+_OLLAMA_WARM_INFERENCE_TIMEOUT_SECONDS = 30
+_OLLAMA_COLD_INFERENCE_TIMEOUT_SECONDS = 120
 
 
 # ── Config CRUD ───────────────────────────────────────────────────────────────
@@ -159,6 +164,22 @@ def get_ollama_models() -> list[str]:
     except Exception as exc:
         raise HTTPException(
             status_code=503, detail=translate(exc, config.base_url)
+        ) from exc
+
+
+@router.post("/ollama/models", response_model=ModelsListResponse)
+def post_ollama_models(request: OllamaModelsRequest) -> ModelsListResponse:
+    base_url = request.base_url.rstrip("/")
+    tags_url = base_url + "/api/tags"
+    try:
+        resp = _requests.get(tags_url, timeout=_OLLAMA_TAGS_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        data = resp.json()
+        return ModelsListResponse(models=[m["name"] for m in data.get("models", [])])
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not load models from this Ollama server.",
         ) from exc
 
 
@@ -472,177 +493,17 @@ def _check_sapbert(config: AppConfig) -> tuple[str, str | None]:
     return "unreachable", msg
 
 
-# Ordered from smallest to largest — first match wins
-KNOWN_MODEL_SIZE_ORDER = [
-    # Sub 1B
-    "tinyllama",
-    "tinydolphin",
-    "qwen2:0.5b",
-    "qwen2.5:0.5b",
-    "smollm:135m",
-    "smollm:360m",
-    "smollm2:135m",
-    "smollm2:360m",
-    "phi3.5:mini",
-    # 1B range
-    "smollm:1.7b",
-    "smollm2:1.7b",
-    "qwen2:1.5b",
-    "qwen2.5:1.5b",
-    "llama3.2:1b",
-    "gemma3:1b",
-    "phi3:mini",
-    # 2B range
-    "gemma:2b",
-    "gemma2:2b",
-    "gemma3:2b",
-    "qwen2:2b",
-    "moondream",
-    # 3B range
-    "llama3.2:3b",
-    "llama3.2:latest",
-    "llama3.2",
-    "phi3:3b",
-    "phi3.5",
-    "phi4-mini",
-    "qwen2.5:3b",
-    "olmoe",
-    "stablelm2",
-    # 4B range
-    "gemma3:4b",
-    "phi3:medium",
-    "qwen3:4b",
-    # 7B range
-    "codellama:latest",
-    "codellama:7b",
-    "codellama",
-    "mistral:latest",
-    "mistral:7b",
-    "mistral",
-    "llama2:7b",
-    "llama2:latest",
-    "llama2",
-    "llama3:8b",
-    "llama3:latest",
-    "llama3",
-    "llama3.1:8b",
-    "llama3.1:latest",
-    "llama3.1",
-    "gemma:7b",
-    "gemma2:9b",
-    "gemma3:9b",
-    "gemma3:12b",
-    "qwen2:7b",
-    "qwen2.5:7b",
-    "qwen3:8b",
-    "qwen3:latest",
-    "qwen3",
-    "deepseek-r1:7b",
-    "deepseek-r1:8b",
-    "deepseek-coder:6.7b",
-    "deepseek-coder:latest",
-    "deepseek-coder",
-    "neural-chat",
-    "starling-lm",
-    "orca-mini",
-    "vicuna",
-    "openchat",
-    "zephyr",
-    "wizard-vicuna-uncensored",
-    "nous-hermes",
-    "solar",
-    "dolphin-mistral",
-    "dolphin-phi",
-    "wizard-math",
-    "medllama2",
-    "meditron",
-    # 13B range
-    "llama2:13b",
-    "codellama:13b",
-    "deepseek-r1:14b",
-    "qwen2.5:14b",
-    "qwen3:14b",
-    "phi4",
-    "mistral-nemo",
-    "mistral-small",
-    # 20B range
-    "gpt-oss:20b",
-    "command-r",
-    "mistral-small3.1:latest",
-    "mistral-small3.1",
-    # 22-27B range
-    "gemma3:27b",
-    "medgemma:27b",
-    "gemma2:27b",
-    "qwen3:30b",
-    "deepseek-r1:32b",
-    "qwen2.5:32b",
-    # 34B+
-    "codellama:34b",
-    "llama2:70b",
-    "llama3.1:70b",
-    "llama3:70b",
-    "llama3:70b-instruct",
-    "qwen2:72b",
-    "qwen2.5:72b",
-    "qwen3:32b",
-    "deepseek-r1:70b",
-    "command-r-plus",
-    "mixtral:8x7b",
-    "mixtral:8x22b",
-    "mixtral",
-    # 100B+
-    "gpt-oss:120b",
-    "llama3.1:405b",
-    "deepseek-r1:671b",
-]
-
-# Models that cannot do chat inference — always exclude
-EMBEDDING_MODELS = [
-    "nomic-embed-text",
-    "mxbai-embed",
-    "all-minilm",
-    "snowflake-arctic-embed",
-    "bge-m3",
-    "bge-large",
-    "nomic-bert",
-    "embed",
-]
-
-
-def pick_test_model(models: list[dict]) -> str:
-    """Pick the smallest chat model from /api/tags model dicts (each has at least 'name' and 'size')."""
-    chat_models = [
-        m for m in models if not any(e in m["name"].lower() for e in EMBEDDING_MODELS)
-    ]
-    if not chat_models:
-        chat_models = list(models)
-
-    def rank_in_known(name: str) -> int:
-        lower = name.lower()
-        for i, known in enumerate(KNOWN_MODEL_SIZE_ORDER):
-            if lower.startswith(known.lower()):
-                return i
-        return len(KNOWN_MODEL_SIZE_ORDER)
-
-    def sort_key(m: dict) -> tuple:
-        # Sort by real byte size first (0 if missing), then by name-list position as tiebreaker
-        size = m.get("size") or 0
-        return (size, rank_in_known(m["name"]))
-
-    return min(chat_models, key=sort_key)["name"]
-
-
 def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
     base_url = config.base_url.rstrip("/")
     tags_url = base_url + "/api/tags"
+    selected_model = config.model
 
     print(f"[config/test] ollama local → {tags_url}", flush=True)
 
     # Step 1 — Server reachability + model discovery
     t0 = time.monotonic()
     try:
-        tags_resp = _requests.get(tags_url, timeout=5)
+        tags_resp = _requests.get(tags_url, timeout=_OLLAMA_TAGS_TIMEOUT_SECONDS)
         tags_resp.raise_for_status()
         data = tags_resp.json()
         available_model_dicts = data.get("models", [])
@@ -680,41 +541,63 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
             error_type="model_unavailable",
         )
 
-    # Step 2.5 — Check which model is resident in VRAM (/api/ps)
+    selected_model_available = selected_model in available
+    print(
+        f"[config/test] ollama local selected model → {selected_model!r} "
+        f"available={selected_model_available}",
+        flush=True,
+    )
+    if not selected_model_available:
+        return ConnectionTestResponse(
+            success=False,
+            message=(
+                f"Ollama is running at {base_url}, but the selected model "
+                f"{selected_model!r} is not installed."
+            ),
+            available_models=available,
+            provider_ok=True,
+            api_key_ok=None,
+            model_ok=False,
+            error_type="model_unavailable",
+        )
+
+    # Step 2.5 — Check whether the selected model is resident in VRAM (/api/ps)
     resident_model: str | None = None
+    selected_model_loaded = False
     ps_url = base_url + "/api/ps"
     try:
-        ps_resp = _requests.get(ps_url, timeout=5)
+        ps_resp = _requests.get(ps_url, timeout=_OLLAMA_PS_TIMEOUT_SECONDS)
         if ps_resp.ok:
             ps_models = ps_resp.json().get("models", [])
             if ps_models:
                 resident_model = ps_models[0]["name"]
+                selected_model_loaded = any(
+                    m.get("name") == selected_model for m in ps_models
+                )
     except Exception:  # noqa: BLE001, S110 - /api/ps is best-effort metadata
         pass
     print(
-        f"[config/test] ollama local /api/ps ← loaded={resident_model!r}",
+        f"[config/test] ollama local /api/ps ← "
+        f"selected_model_loaded={selected_model_loaded}",
         flush=True,
     )
 
-    # Step 3 — Inference test: prefer the resident (warm) model, else pick smallest
+    # Step 3 — Inference test the exact selected model.
     n = len(available)
     chat_url = base_url + "/api/chat"
-    if resident_model:
-        test_model = resident_model
-        inference_timeout = 30
-        selection_note = "resident in VRAM — warm start"
-    else:
-        test_model = pick_test_model(available_model_dicts)
-        inference_timeout = 60
-        selection_note = f"selected as fastest available from {n} models"
+    test_model = selected_model
+    inference_timeout = (
+        _OLLAMA_WARM_INFERENCE_TIMEOUT_SECONDS
+        if selected_model_loaded
+        else _OLLAMA_COLD_INFERENCE_TIMEOUT_SECONDS
+    )
     payload = {
         "model": test_model,
         "messages": [{"role": "user", "content": "Reply with only OK"}],
         "stream": False,
     }
     print(
-        f"[config/test] ollama local inference test → model={test_model!r} "
-        f"({selection_note})",
+        f"[config/test] ollama local inference test → model={test_model!r}",
         flush=True,
     )
     try:
@@ -723,21 +606,21 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
         latency_ms = int((time.monotonic() - t0) * 1000)
         print(
             f"[config/test] ollama local inference test ← TIMEOUT — "
-            f"returning partial success (server reachable, {n} models available)",
+            f"selected model {test_model!r} did not respond",
             flush=True,
         )
         return ConnectionTestResponse(
-            success=True,
+            success=False,
             message=(
-                f"Connection OK — {n} model{'s' if n != 1 else ''} available. "
-                "(Inference test timed out — server is reachable but models may be slow to load.)"
+                f"Ollama selected model {test_model!r} did not respond within "
+                f"{inference_timeout} seconds."
             ),
             available_models=available,
             latency_ms=latency_ms,
             provider_ok=True,
             api_key_ok=None,
-            model_ok=None,
-            warning="inference_timeout",
+            model_ok=False,
+            error_type="model_test_failed",
             resident_model=resident_model,
         )
     except Exception as exc:  # noqa: BLE001 - normalize local Ollama failures to test response

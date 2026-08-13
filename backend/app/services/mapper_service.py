@@ -83,6 +83,7 @@ _ONTOLOGY_COMPARE_NORMALIZE: dict[str, str] = {
     "HP": "HPO",
     "HPO": "HPO",
     "MONDO": "MONDO",
+    "EFO": "EFO",
     "NCIT": "NCIT",
     "LOINC": "LOINC",
     "ICD10": "ICD10",
@@ -129,6 +130,28 @@ def _append_mapping_warning(notes: str | None, warning: str | None) -> str | Non
     return warning
 
 
+def _json_safe_original_value(value: Any) -> Any:
+    if value is None:
+        return ""
+    if isinstance(value, str | int | float | bool):
+        return value
+    if hasattr(value, "item"):
+        try:
+            return _json_safe_original_value(value.item())
+        except (AttributeError, TypeError, ValueError):
+            pass
+    if hasattr(value, "isoformat"):
+        try:
+            return value.isoformat()
+        except (AttributeError, TypeError, ValueError):
+            pass
+    return str(value)
+
+
+def _json_safe_original_row(rec: dict[str, Any]) -> dict[str, Any]:
+    return {key: _json_safe_original_value(value) for key, value in rec.items()}
+
+
 def _infer_ontology_from_code(code: str) -> str:
     """Derive a canonical ontology label from a CURIE prefix."""
     if not code or ":" not in code:
@@ -138,6 +161,7 @@ def _infer_ontology_from_code(code: str) -> str:
         "HP": "HPO",
         "HPO": "HPO",
         "MONDO": "MONDO",
+        "EFO": "EFO",
         "NCIT": "NCIT",
         "LOINC": "LOINC",
         "ICD10": "ICD10",
@@ -293,6 +317,11 @@ def _bridge_mapping_values(result) -> tuple[str, str, str]:
 def _ontology_matches_allow_list(ontology: str, allowed: list[str] | None) -> bool:
     if not allowed:
         return True
+    if any(
+        _normalize_for_comparison(allowed_ontology) == "EFO"
+        for allowed_ontology in allowed
+    ):
+        return True
     normalized_ontology = _normalize_for_comparison(ontology)
     return normalized_ontology in {
         _normalize_for_comparison(allowed_ontology) for allowed_ontology in allowed
@@ -404,6 +433,7 @@ def start_batch_job(
     auto_accept_threshold: float,
     target_ontology_column: str | None = None,
     row_target_ontologies: list[str] | None = None,
+    original_columns: list[str] | None = None,
 ) -> str:
     job_id = str(uuid.uuid4())
     normalized_target_ontologies = normalize_target_ontologies(target_ontologies)
@@ -422,6 +452,7 @@ def start_batch_job(
             "results": [],
             "target_ontologies": normalized_target_ontologies,
             "target_ontology_column": target_ontology_column,
+            "original_columns": original_columns or [],
             "cancel_requested": False,
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -516,6 +547,13 @@ def start_batch_job(
                 if per_row_target_ontologies is not None
                 else normalized_target_ontologies
             )
+            requested_target_ontology = (
+                effective_target_ontologies[0]
+                if per_row_target_ontologies is not None and effective_target_ontologies
+                else ", ".join(effective_target_ontologies or []) or None
+            )
+            safe_original_row = _json_safe_original_row(rec)
+            safe_original_columns = original_columns or list(safe_original_row.keys())
             mapper, mapping_warning = mapper_for(effective_target_ontologies)
 
             print(
@@ -528,6 +566,7 @@ def start_batch_job(
                 result = mapper.map_term(
                     source_term=effective_term,
                     source_label=effective_label,
+                    source_description=description,
                     source_type=source_type,
                     entity_type=mapped_entity_type,
                 )
@@ -570,6 +609,10 @@ def start_batch_job(
                     row_index=i,
                     field_name=field_name,
                     label=effective_label,
+                    source_description=description,
+                    original_row=safe_original_row,
+                    original_columns=safe_original_columns,
+                    requested_target_ontology=requested_target_ontology,
                     suggested_code=target_code,
                     suggested_term=target_term,
                     ontology=ontology,
@@ -595,6 +638,10 @@ def start_batch_job(
                     row_index=i,
                     field_name=field_name,
                     label=effective_label,
+                    source_description=description,
+                    original_row=safe_original_row,
+                    original_columns=safe_original_columns,
+                    requested_target_ontology=requested_target_ontology,
                     suggested_code="UNMAPPED",
                     suggested_term=str(exc) or type(exc).__name__,
                     ontology="",
@@ -608,6 +655,10 @@ def start_batch_job(
                     row_index=i,
                     field_name=field_name,
                     label=effective_label,
+                    source_description=description,
+                    original_row=safe_original_row,
+                    original_columns=safe_original_columns,
+                    requested_target_ontology=requested_target_ontology,
                     suggested_code="UNMAPPED",
                     suggested_term=str(exc) or type(exc).__name__,
                     ontology="",
@@ -714,7 +765,10 @@ def promote_batch_alternative(
             for alternative in row.alternatives:
                 if alternative.code != alternative_code:
                     continue
-                if alternative_ontology is not None and alternative.ontology != alternative_ontology:
+                if (
+                    alternative_ontology is not None
+                    and alternative.ontology != alternative_ontology
+                ):
                     continue
                 selected = alternative
                 break

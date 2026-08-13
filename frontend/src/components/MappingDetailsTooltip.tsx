@@ -4,10 +4,11 @@ import InfoTooltip from './InfoTooltip';
 
 interface MappingDetailsContentProps {
   details: MappingDetailsInput;
+  explanationLabel?: string;
 }
 
-export function MappingDetailsContent({ details }: MappingDetailsContentProps) {
-  const sections = getMappingDetailSections(details);
+export function MappingDetailsContent({ details, explanationLabel }: MappingDetailsContentProps) {
+  const sections = getMappingDetailSections(details, explanationLabel);
   if (sections.length === 0) return null;
 
   return (
@@ -25,16 +26,17 @@ export function MappingDetailsContent({ details }: MappingDetailsContentProps) {
 interface MappingDetailsTooltipProps {
   code: string;
   details: MappingDetailsInput;
+  explanationLabel?: string;
 }
 
-export default function MappingDetailsTooltip({ code, details }: MappingDetailsTooltipProps) {
+export default function MappingDetailsTooltip({ code, details, explanationLabel }: MappingDetailsTooltipProps) {
   if (!hasMappingDetails(details)) return null;
 
   return (
     <InfoTooltip
       label={`View mapping details for ${code}`}
       bubbleClassName="mapping-details-tooltip"
-      tooltip={<MappingDetailsContent details={details} />}
+      tooltip={<MappingDetailsContent details={details} explanationLabel={explanationLabel} />}
     />
   );
 }

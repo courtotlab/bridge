@@ -81,3 +81,9 @@ export interface AnthropicModelsResponse {
   warning?: string;
   error?: string;
 }
+
+export interface OllamaModelsResponse {
+  models: string[];
+  warning?: string;
+  error?: string;
+}

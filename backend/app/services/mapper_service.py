@@ -460,6 +460,7 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
         source_label=request.source_label,
         source_type=request.source_type,
         entity_type=mapped_entity_type,  # Fix 2: normalised entity type
+        source_description=request.source_description,
     )
 
     alternatives = [

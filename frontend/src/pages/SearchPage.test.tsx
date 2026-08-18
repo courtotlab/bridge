@@ -215,6 +215,40 @@ describe('SearchPage retrieval method display', () => {
     }));
   });
 
+  it('sends the entered description as source_description in the map request', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(mappingResponse());
+    const { user } = setup();
+
+    await user.type(screen.getByLabelText(/field name/i), 'sbp');
+    await user.type(screen.getByLabelText(/label of the field/i), 'Systolic blood pressure');
+    await user.type(
+      screen.getByLabelText(/description/i),
+      'Baseline systolic blood pressure measured in mmHg',
+    );
+    await user.click(screen.getByRole('button', { name: /search/i }));
+
+    await waitFor(() => expect(mocks.mapSingleTerm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source_term: 'sbp',
+        source_label: 'Systolic blood pressure',
+        source_description: 'Baseline systolic blood pressure measured in mmHg',
+      }),
+    ));
+  });
+
+  it('does not send a whitespace-only description as source_description', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(mappingResponse());
+    const { user } = setup();
+
+    await user.type(screen.getByLabelText(/field name/i), 'sbp');
+    await user.type(screen.getByLabelText(/description/i), '   ');
+    await user.click(screen.getByRole('button', { name: /search/i }));
+
+    await waitFor(() => expect(mocks.mapSingleTerm).toHaveBeenCalledWith(
+      expect.objectContaining({ source_description: undefined }),
+    ));
+  });
+
   it('uses accessible non-native tooltip triggers for result metadata', async () => {
     mocks.mapSingleTerm.mockResolvedValue(mappingResponse({ retrieval_mode: 'public' }));
     const { user } = setup();

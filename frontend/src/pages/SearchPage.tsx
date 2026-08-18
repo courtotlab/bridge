@@ -164,6 +164,7 @@ export default function SearchPage() {
     mapSingleTerm({
       source_term: sourceTerm.trim(),
       source_label: sourceLabel.trim() || undefined,
+      source_description: description.trim() || undefined,
       source_type: dataType || undefined,
       entity_type: clinicalArea || undefined,
       target_ontologies: selectedOntologies,

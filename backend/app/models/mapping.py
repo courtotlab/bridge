@@ -9,6 +9,7 @@ from app.utils.ontology import normalize_target_ontologies
 class SingleMappingRequest(BaseModel):
     source_term: str
     source_label: str | None = None
+    source_description: str | None = None
     source_type: str | None = None  # data type: numeric, text, boolean, etc.
     entity_type: str | None = None  # clinical area: phenotype, disease, etc.
     target_ontologies: list[str] | None = None  # None = automatic routing

@@ -126,6 +126,7 @@ def test_single_mapping_constructs_planned_mapper_for_public_and_disabled(
         source_label=None,
         source_type=None,
         entity_type="phenotype",
+        source_description=None,
     )
 
 
@@ -306,6 +307,30 @@ def test_single_mapping_passes_target_ontologies_to_mapper(
     )
 
     assert mapper_cls.call_args.kwargs["ontologies"] == expected
+
+
+def test_single_mapping_passes_source_description_to_mapper(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result()
+    mapper_cls = MagicMock(return_value=mapper_instance)
+    monkeypatch.setattr("llm_ontology_mapper.OntologyMapper", mapper_cls)
+
+    mapper_service.map_single_term(
+        SingleMappingRequest(
+            source_term="sbp",
+            source_label="Systolic blood pressure",
+            source_description="Baseline systolic blood pressure measured in mmHg",
+            entity_type="phenotype",
+        )
+    )
+
+    assert mapper_instance.map_term.call_args.kwargs["source_description"] == (
+        "Baseline systolic blood pressure measured in mmHg"
+    )
 
 
 def test_single_mapping_preserves_imported_efo_native_ontology(monkeypatch):

@@ -11,6 +11,7 @@ import {
 } from '../api/batchApi';
 import BatchResultsTable, { filterBatchRows, isUnmappedCode } from '../components/BatchResultsTable';
 import OntologyMultiSelect from '../components/OntologyMultiSelect';
+import StrictOntologyToggle from '../components/StrictOntologyToggle';
 import { ONTOLOGY_OPTIONS } from '../constants/ontologies';
 import { useSession } from '../context/SessionContext';
 import type { AlternativeResult, BatchJobStatus, BatchRowResult, BatchUploadPreview } from '../types/mapping';
@@ -18,7 +19,7 @@ import { interruptActiveBatch, registerActiveBatchInterrupter, type BatchInterru
 import { promoteBatchAlternative } from '../utils/batchPromotion';
 import { BATCH_FILE_ACCEPT, isSupportedBatchFile, UNSUPPORTED_BATCH_FILE_MESSAGE } from '../utils/batchFiles';
 import { detectColumnMappings } from '../utils/columnDetection';
-import { targetOntologiesOrNull } from '../utils/ontologyPayloads';
+import { effectiveStrictTargetOntology, targetOntologiesOrNull } from '../utils/ontologyPayloads';
 import './BatchPage.css';
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -131,6 +132,7 @@ export default function BatchPage() {
   // Column mapping config
   const [columnMap, setColumnMap] = useState<Record<string, string | null>>(initialColumnMap);
   const [targetOntologies, setTargetOntologies] = useState<string[]>([]);
+  const [strictTargetOntology, setStrictTargetOntology] = useState(false);
   const [useRag, setUseRag] = useState(true);
   const [autoAcceptThreshold, setAutoAcceptThreshold] = useState(85);
 
@@ -531,6 +533,7 @@ export default function BatchPage() {
     setError(null);
     setStarting(true);
     const selectedOntologies = targetOntologiesOrNull(targetOntologies);
+    const strictOntology = effectiveStrictTargetOntology(targetOntologies, strictTargetOntology);
     try {
       interruptingRef.current = false;
       cancellingRef.current = false;
@@ -544,6 +547,7 @@ export default function BatchPage() {
           target_ontology_column: columnMap.target_ontology || undefined,
           target_ontologies: selectedOntologies,
           auto_accept_threshold: autoAcceptThreshold / 100,
+          strict_target_ontology: strictOntology,
         });
         batchSessionIdRef.current = sid;
       } catch {
@@ -572,6 +576,7 @@ export default function BatchPage() {
         useRag,
         autoAcceptThreshold: autoAcceptThreshold / 100,
         sessionId: sid,
+        strictTargetOntology: strictOntology,
       });
       lifecycle.startPending = false;
       lifecycle.jobId = job_id;
@@ -600,6 +605,7 @@ export default function BatchPage() {
             target_ontologies: selectedOntologies,
             use_rag: useRag,
             auto_accept_threshold: autoAcceptThreshold / 100,
+            strict_target_ontology: strictOntology,
           },
         }).catch(console.error);
       }
@@ -839,6 +845,7 @@ export default function BatchPage() {
     setPreview(null);
     setColumnMap(initialColumnMap());
     setTargetOntologies([]);
+    setStrictTargetOntology(false);
     setUseRag(true);
     setAutoAcceptThreshold(85);
     setPhase('upload');
@@ -1035,6 +1042,15 @@ export default function BatchPage() {
                   }
                 />
               </div>
+
+              {targetOntologies.includes('EFO') && (
+                <div style={{ marginBottom: 16 }}>
+                  <StrictOntologyToggle
+                    checked={strictTargetOntology}
+                    onChange={setStrictTargetOntology}
+                  />
+                </div>
+              )}
 
               <div className="batch-threshold-row">
                 <label className="field-label" style={{ margin: 0 }}>Auto-accept above</label>

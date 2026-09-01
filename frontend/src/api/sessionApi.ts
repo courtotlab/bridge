@@ -12,6 +12,7 @@ export interface InputSummary {
   target_ontologies?: string[] | null;
   target_ontology?: string | null;
   auto_accept_threshold?: number;
+  strict_target_ontology?: boolean;
 }
 
 export interface SessionEvent {

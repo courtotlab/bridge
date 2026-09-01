@@ -13,6 +13,7 @@ class SingleMappingRequest(BaseModel):
     source_type: str | None = None  # data type: numeric, text, boolean, etc.
     entity_type: str | None = None  # clinical area: phenotype, disease, etc.
     target_ontologies: list[str] | None = None  # None = automatic routing
+    strict_target_ontology: bool = False
 
     @field_validator("source_term")
     @classmethod
@@ -71,6 +72,7 @@ class BatchMappingRequest(BaseModel):
     target_ontology_column: str | None = None
     target_ontologies: list[str] | None = None
     auto_accept_threshold: float = 0.85
+    strict_target_ontology: bool = False
 
     @field_validator("target_ontologies", mode="before")
     @classmethod

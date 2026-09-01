@@ -14,6 +14,7 @@ export interface InputSummary {
   target_ontologies?: string[] | null;
   target_ontology?: string | null;
   auto_accept_threshold?: number;
+  strict_target_ontology?: boolean | null;
 }
 
 export interface EventRecord {
@@ -46,6 +47,7 @@ export interface HistoryConfiguration {
   provider?: string | null;
   model?: string | null;
   rag_enabled?: boolean | null;
+  strict_target_ontology?: boolean | null;
 }
 
 export interface HistoryFailure {

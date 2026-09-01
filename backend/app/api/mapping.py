@@ -22,10 +22,11 @@ logger = logging.getLogger(__name__)
 @router.post("/single", response_model=SingleMappingResponse)
 def map_single(request: SingleMappingRequest) -> SingleMappingResponse:
     logger.info(
-        "[map/single] term='%s' entity_type='%s' ontologies='%s'",
+        "[map/single] term='%s' entity_type='%s' ontologies='%s' strict='%s'",
         request.source_term,
         request.entity_type,
         request.target_ontologies,
+        request.strict_target_ontology,
     )
 
     try:

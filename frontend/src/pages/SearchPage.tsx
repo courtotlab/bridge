@@ -4,12 +4,13 @@ import { useNavigate } from 'react-router-dom';
 import { getConfig } from '../api/configApi';
 import { mapSingleTerm } from '../api/mappingApi';
 import OntologyMultiSelect from '../components/OntologyMultiSelect';
+import StrictOntologyToggle from '../components/StrictOntologyToggle';
 import TermSearchResultView from '../components/TermSearchResultView';
 import { ONTOLOGY_OPTIONS } from '../constants/ontologies';
 import { useSession } from '../context/SessionContext';
 import type { AlternativeResult, SingleMappingResponse } from '../types/mapping';
 import { downloadTermMappingCsv } from '../utils/csvExport';
-import { targetOntologiesOrNull } from '../utils/ontologyPayloads';
+import { effectiveStrictTargetOntology, targetOntologiesOrNull } from '../utils/ontologyPayloads';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -90,6 +91,7 @@ export default function SearchPage() {
   const [dataType, setDataType] = useState('');
   const [clinicalArea, setClinicalArea] = useState('');
   const [targetOntologies, setTargetOntologies] = useState<string[]>([]);
+  const [strictTargetOntology, setStrictTargetOntology] = useState(false);
   const [termError, setTermError] = useState('');
 
   // Request state
@@ -139,12 +141,14 @@ export default function SearchPage() {
     setLoading(true);
 
     const selectedOntologies = targetOntologiesOrNull(targetOntologies);
+    const strictOntology = effectiveStrictTargetOntology(targetOntologies, strictTargetOntology);
 
     try {
       const sid = await startSession('term_search', {
         term: sourceTerm.trim(),
         clinical_area: clinicalArea || undefined,
         target_ontologies: selectedOntologies,
+        strict_target_ontology: strictOntology,
       });
       sessionIdRef.current = sid;
       emitEvent(sid, {
@@ -155,6 +159,7 @@ export default function SearchPage() {
           term: sourceTerm.trim(),
           clinical_area: clinicalArea || null,
           target_ontologies: selectedOntologies,
+          strict_target_ontology: strictOntology,
         },
       }).catch(console.error);
     } catch {
@@ -168,6 +173,7 @@ export default function SearchPage() {
       source_type: dataType || undefined,
       entity_type: clinicalArea || undefined,
       target_ontologies: selectedOntologies,
+      strict_target_ontology: strictOntology,
     })
       .then((res) => {
         // Sort alternatives by confidence descending
@@ -418,6 +424,14 @@ export default function SearchPage() {
               helperText="Selected ontologies restrict the mapping results. Leave all unselected for automatic selection."
             />
           </div>
+
+          {targetOntologies.includes('EFO') && (
+            <StrictOntologyToggle
+              checked={strictTargetOntology}
+              onChange={setStrictTargetOntology}
+              disabled={formDisabled}
+            />
+          )}
 
           {/* Submit */}
           <div className="search-form-actions">

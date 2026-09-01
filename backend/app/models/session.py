@@ -26,6 +26,7 @@ class InputSummary(BaseModel):
     target_ontologies: list[str] | None = None
     target_ontology: str | None = Field(default=None, exclude=True)
     auto_accept_threshold: float | None = None
+    strict_target_ontology: bool | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -77,6 +78,7 @@ class HistoryConfiguration(BaseModel):
     provider: str | None = None
     model: str | None = None
     rag_enabled: bool | None = None
+    strict_target_ontology: bool | None = None
 
 
 class HistoryFailure(BaseModel):

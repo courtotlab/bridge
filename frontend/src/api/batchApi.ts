@@ -46,6 +46,7 @@ export async function startBatch(params: {
   useRag: boolean;
   autoAcceptThreshold: number;
   sessionId?: string | null;
+  strictTargetOntology?: boolean;
 }): Promise<{ job_id: string; total: number }> {
   const form = new FormData();
   form.append('file', params.file);
@@ -58,6 +59,7 @@ export async function startBatch(params: {
   form.append('use_rag', String(params.useRag));
   form.append('auto_accept_threshold', String(params.autoAcceptThreshold));
   if (params.sessionId) form.append('session_id', params.sessionId);
+  form.append('strict_target_ontology', String(params.strictTargetOntology ?? false));
   try {
     const { data } = await client.post('/batch/start', form, {
       headers: { 'Content-Type': 'multipart/form-data' },

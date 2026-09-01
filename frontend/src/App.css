@@ -232,6 +232,27 @@ body {
   color: #9ca3af;
 }
 
+/* ── Strict ontology toggle ─────────────────────────────────────────── */
+.strict-ontology-toggle {
+  margin-bottom: 16px;
+}
+
+.strict-ontology-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: #374151;
+}
+
+.strict-ontology-desc {
+  margin: 4px 0 0 23px;
+  font-size: 12px;
+  color: #6b7280;
+  line-height: 1.5;
+}
+
 .field-warning {
   margin: 6px 0 0;
   font-size: 12px;

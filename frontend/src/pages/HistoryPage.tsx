@@ -99,6 +99,9 @@ function configurationRows(configuration?: HistoryConfiguration | null): Array<[
   if (!configuration) return [];
   const rows: Array<[string, string]> = [];
   addRow(rows, 'Selected ontologies', configuration.target_ontologies);
+  if (configuration.strict_target_ontology) {
+    rows.push(['Strict ontology matching', 'Enabled']);
+  }
   addRow(rows, 'Target ontology column', configuration.target_ontology_column);
   addPercentRow(rows, 'Auto-accept threshold', configuration.auto_accept_threshold);
   addRow(rows, 'Retrieval method', configuration.retrieval_method ? formatRetrievalMode(configuration.retrieval_method) : null);

@@ -138,6 +138,7 @@ def _configuration_from(
         rag_enabled=start_payload.get("use_rag")
         if isinstance(start_payload.get("use_rag"), bool)
         else None,
+        strict_target_ontology=record.input_summary.strict_target_ontology,
     )
     return configuration if configuration.model_dump(exclude_none=True) else None
 

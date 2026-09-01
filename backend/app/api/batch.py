@@ -193,6 +193,7 @@ async def start_batch(
     # Deprecated compatibility field: planned retrieval is controlled by Settings.retrieval_mode.
     deprecated_use_rag: bool = Form(True, alias="use_rag"),
     auto_accept_threshold: float = Form(0.85),
+    strict_target_ontology: bool = Form(False),
 ):
     column_map = json.loads(column_map_json)
     target_ontologies = _parse_target_ontologies_json(target_ontologies_json)
@@ -218,6 +219,7 @@ async def start_batch(
         row_target_ontologies=row_target_ontologies,
         original_columns=list(df.columns),
         session_id=session_id,
+        strict_target_ontology=strict_target_ontology,
     )
     return {"job_id": job_id, "total": len(records)}
 

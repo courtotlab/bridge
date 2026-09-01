@@ -461,6 +461,7 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
         source_type=request.source_type,
         entity_type=mapped_entity_type,  # Fix 2: normalised entity type
         source_description=request.source_description,
+        strict_target_ontology=request.strict_target_ontology,
     )
 
     alternatives = [
@@ -523,6 +524,7 @@ def start_batch_job(
     row_target_ontologies: list[str] | None = None,
     original_columns: list[str] | None = None,
     session_id: str | None = None,
+    strict_target_ontology: bool = False,
 ) -> str:
     job_id = str(uuid.uuid4())
     normalized_target_ontologies = normalize_target_ontologies(target_ontologies)
@@ -673,6 +675,7 @@ def start_batch_job(
                     source_description=description,
                     source_type=source_type,
                     entity_type=mapped_entity_type,
+                    strict_target_ontology=strict_target_ontology,
                 )
                 target_code, target_term, ontology = _bridge_mapping_values(result)
                 if target_code != "UNMAPPED" and not _ontology_matches_allow_list(

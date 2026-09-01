@@ -127,6 +127,7 @@ def test_single_mapping_constructs_planned_mapper_for_public_and_disabled(
         source_type=None,
         entity_type="phenotype",
         source_description=None,
+        strict_target_ontology=False,
     )
 
 
@@ -307,6 +308,52 @@ def test_single_mapping_passes_target_ontologies_to_mapper(
     )
 
     assert mapper_cls.call_args.kwargs["ontologies"] == expected
+
+
+def test_single_mapping_defaults_strict_target_ontology_false(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result()
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+
+    mapper_service.map_single_term(
+        SingleMappingRequest(source_term="seizure", target_ontologies=["EFO"])
+    )
+
+    assert mapper_instance.map_term.call_args.kwargs["strict_target_ontology"] is False
+
+
+def test_single_mapping_passes_strict_target_ontology_true_to_mapper(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="EFO:0004340",
+        term="body mass index",
+        ontology="EFO",
+    )
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+
+    mapper_service.map_single_term(
+        SingleMappingRequest(
+            source_term="bmi",
+            target_ontologies=["EFO"],
+            strict_target_ontology=True,
+        )
+    )
+
+    assert mapper_instance.map_term.call_args.kwargs["strict_target_ontology"] is True
 
 
 def test_single_mapping_passes_source_description_to_mapper(monkeypatch):
@@ -1196,3 +1243,72 @@ def test_batch_mapping_converts_wrong_ontology_result_to_unmapped(monkeypatch):
     assert row.suggested_term == "UNMAPPED"
     assert row.ontology == ""
     assert row.decision == "rejected"
+
+
+def test_batch_mapping_defaults_strict_target_ontology_false(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result()
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "sbp", "label": "Systolic blood pressure"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area=None,
+        target_ontologies=["EFO"],
+        auto_accept_threshold=0.85,
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    assert job["status"] == "done"
+    assert (
+        mapper_instance.map_term.call_args.kwargs["strict_target_ontology"] is False
+    )
+
+
+def test_batch_mapping_passes_strict_target_ontology_to_every_row(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="EFO:0004340",
+        term="body mass index",
+        ontology="EFO",
+    )
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[
+            {"field_name": "bmi", "label": "Body mass index"},
+            {"field_name": "ad", "label": "Alzheimer disease"},
+            {"field_name": "height", "label": "Height"},
+        ],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area=None,
+        target_ontologies=["EFO"],
+        auto_accept_threshold=0.85,
+        strict_target_ontology=True,
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    assert job["status"] == "done"
+    assert mapper_instance.map_term.call_count == 3
+    assert all(
+        call.kwargs["strict_target_ontology"] is True
+        for call in mapper_instance.map_term.call_args_list
+    )

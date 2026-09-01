@@ -1,5 +1,6 @@
 import {
   appendTargetOntologiesJson,
+  effectiveStrictTargetOntology,
   targetOntologiesOrNull,
 } from './ontologyPayloads';
 
@@ -18,6 +19,28 @@ describe('targetOntologiesOrNull', () => {
 
   it('never serializes multiple ontologies as a comma-separated string', () => {
     expect(targetOntologiesOrNull(['LOINC', 'HPO'])).not.toBe('LOINC,HPO');
+  });
+});
+
+describe('effectiveStrictTargetOntology', () => {
+  it('is false when the toggle is off, even with EFO selected', () => {
+    expect(effectiveStrictTargetOntology(['EFO'], false)).toBe(false);
+  });
+
+  it('is true when the toggle is on and EFO is selected', () => {
+    expect(effectiveStrictTargetOntology(['EFO'], true)).toBe(true);
+  });
+
+  it('is true when EFO is selected alongside other ontologies and the toggle is on', () => {
+    expect(effectiveStrictTargetOntology(['EFO', 'HPO'], true)).toBe(true);
+  });
+
+  it('is false when EFO is not selected, even if the toggle is on', () => {
+    expect(effectiveStrictTargetOntology(['HPO'], true)).toBe(false);
+  });
+
+  it('is false when no ontologies are selected', () => {
+    expect(effectiveStrictTargetOntology([], true)).toBe(false);
   });
 });
 

@@ -286,6 +286,47 @@ def test_start_batch_accepts_per_row_efo_target_ontology_column(monkeypatch):
     assert captured["row_target_ontologies"] == ["EFO", "EFO"]
 
 
+def test_start_batch_strict_target_ontology_defaults_false(monkeypatch):
+    captured = {}
+
+    def fake_start_batch_job(**kwargs):
+        captured.update(kwargs)
+        return "job-1"
+
+    monkeypatch.setattr("app.api.batch.start_batch_job", fake_start_batch_job)
+
+    response = client.post(
+        "/api/batch/start",
+        data=_form_data('["EFO"]'),
+        files=_csv_upload(),
+    )
+
+    assert response.status_code == 200
+    assert captured["strict_target_ontology"] is False
+
+
+def test_start_batch_strict_target_ontology_true_is_forwarded(monkeypatch):
+    captured = {}
+
+    def fake_start_batch_job(**kwargs):
+        captured.update(kwargs)
+        return "job-1"
+
+    monkeypatch.setattr("app.api.batch.start_batch_job", fake_start_batch_job)
+
+    response = client.post(
+        "/api/batch/start",
+        data={
+            **_form_data('["EFO"]'),
+            "strict_target_ontology": "true",
+        },
+        files=_csv_upload(),
+    )
+
+    assert response.status_code == 200
+    assert captured["strict_target_ontology"] is True
+
+
 def test_start_batch_missing_target_ontology_column_returns_422(monkeypatch):
     response = client.post(
         "/api/batch/start",

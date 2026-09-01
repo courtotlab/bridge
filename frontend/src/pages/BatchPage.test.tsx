@@ -483,6 +483,97 @@ describe('BatchPage file upload formats', () => {
       }),
     ));
   });
+
+  it('hides the strict ontology toggle until EFO is selected', async () => {
+    const { user, input } = setup();
+    const file = fileNamed('data.csv', 'text/csv');
+
+    await user.upload(input, file);
+    await waitFor(() => {
+      expect(screen.getAllByText('data.csv').length).toBeGreaterThan(0);
+    });
+    const selectors = screen.getAllByRole('combobox');
+    await user.selectOptions(selectors[selectors.length - 1], '');
+
+    expect(
+      screen.queryByRole('checkbox', { name: /require codes from selected ontology only/i }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('checkbox', { name: 'EFO' }));
+
+    expect(
+      screen.getByRole('checkbox', { name: /require codes from selected ontology only/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('defaults strict_target_ontology to false when the toggle is untouched', async () => {
+    const { user, input } = setup();
+    const file = fileNamed('data.csv', 'text/csv');
+
+    await user.upload(input, file);
+    await waitFor(() => {
+      expect(screen.getAllByText('data.csv').length).toBeGreaterThan(0);
+    });
+    const selectors = screen.getAllByRole('combobox');
+    await user.selectOptions(selectors[selectors.length - 1], '');
+
+    await user.click(screen.getByRole('checkbox', { name: 'EFO' }));
+    await user.click(screen.getByRole('button', { name: /start mapping/i }));
+
+    await waitFor(() => expect(startBatch).toHaveBeenCalledWith(
+      expect.objectContaining({ strictTargetOntology: false }),
+    ));
+  });
+
+  it('forwards strict_target_ontology=true for every row when the toggle is on', async () => {
+    const { user, input } = setup();
+    const file = fileNamed('data.csv', 'text/csv');
+
+    await user.upload(input, file);
+    await waitFor(() => {
+      expect(screen.getAllByText('data.csv').length).toBeGreaterThan(0);
+    });
+    const selectors = screen.getAllByRole('combobox');
+    await user.selectOptions(selectors[selectors.length - 1], '');
+
+    await user.click(screen.getByRole('checkbox', { name: 'EFO' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: /require codes from selected ontology only/i }),
+    );
+    await user.click(screen.getByRole('button', { name: /start mapping/i }));
+
+    await waitFor(() => expect(startBatch).toHaveBeenCalledWith(
+      expect.objectContaining({ targetOntologies: ['EFO'], strictTargetOntology: true }),
+    ));
+  });
+
+  it('does not submit a stale strict_target_ontology=true once EFO is deselected', async () => {
+    const { user, input } = setup();
+    const file = fileNamed('data.csv', 'text/csv');
+
+    await user.upload(input, file);
+    await waitFor(() => {
+      expect(screen.getAllByText('data.csv').length).toBeGreaterThan(0);
+    });
+    const selectors = screen.getAllByRole('combobox');
+    await user.selectOptions(selectors[selectors.length - 1], '');
+
+    await user.click(screen.getByRole('checkbox', { name: 'EFO' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: /require codes from selected ontology only/i }),
+    );
+    await user.click(screen.getByRole('checkbox', { name: 'EFO' }));
+
+    expect(
+      screen.queryByRole('checkbox', { name: /require codes from selected ontology only/i }),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /start mapping/i }));
+
+    await waitFor(() => expect(startBatch).toHaveBeenCalledWith(
+      expect.objectContaining({ strictTargetOntology: false }),
+    ));
+  });
 });
 
 describe('BatchPage manual cancellation', () => {

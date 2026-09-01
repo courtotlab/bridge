@@ -249,6 +249,74 @@ describe('SearchPage retrieval method display', () => {
     ));
   });
 
+  it('hides the strict ontology toggle until EFO is selected', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(mappingResponse());
+    setup();
+
+    expect(
+      screen.queryByRole('checkbox', { name: /require codes from selected ontology only/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the strict ontology toggle once EFO is selected', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(mappingResponse());
+    const { user } = setup();
+
+    await user.click(screen.getByRole('checkbox', { name: 'EFO' }));
+
+    expect(
+      screen.getByRole('checkbox', { name: /require codes from selected ontology only/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('defaults strict_target_ontology to false when the toggle is untouched', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(mappingResponse());
+    const { user } = setup();
+
+    await user.click(screen.getByRole('checkbox', { name: 'EFO' }));
+    await submitSearch(user);
+
+    await waitFor(() => expect(mocks.mapSingleTerm).toHaveBeenCalledWith(
+      expect.objectContaining({ strict_target_ontology: false }),
+    ));
+  });
+
+  it('sends strict_target_ontology=true once the toggle is switched on', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(mappingResponse());
+    const { user } = setup();
+
+    await user.click(screen.getByRole('checkbox', { name: 'EFO' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: /require codes from selected ontology only/i }),
+    );
+    await submitSearch(user);
+
+    await waitFor(() => expect(mocks.mapSingleTerm).toHaveBeenCalledWith(
+      expect.objectContaining({ strict_target_ontology: true }),
+    ));
+  });
+
+  it('does not submit a stale strict_target_ontology=true once EFO is deselected', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(mappingResponse());
+    const { user } = setup();
+
+    await user.click(screen.getByRole('checkbox', { name: 'EFO' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: /require codes from selected ontology only/i }),
+    );
+    await user.click(screen.getByRole('checkbox', { name: 'EFO' }));
+
+    expect(
+      screen.queryByRole('checkbox', { name: /require codes from selected ontology only/i }),
+    ).not.toBeInTheDocument();
+
+    await submitSearch(user);
+
+    await waitFor(() => expect(mocks.mapSingleTerm).toHaveBeenCalledWith(
+      expect.objectContaining({ strict_target_ontology: false }),
+    ));
+  });
+
   it('uses accessible non-native tooltip triggers for result metadata', async () => {
     mocks.mapSingleTerm.mockResolvedValue(mappingResponse({ retrieval_mode: 'public' }));
     const { user } = setup();

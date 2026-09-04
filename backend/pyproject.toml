@@ -18,7 +18,7 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-llm-ontology-mapper = { git = "https://github.com/courtotlab/llm-ontology-mapper.git", rev = "575741dc947dd17be6b1125423d16100b3468012" }
+llm-ontology-mapper = { git = "https://github.com/courtotlab/llm-ontology-mapper.git", rev = "26af393567a492bb7a6fcbbdd27872afe6a5a393" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

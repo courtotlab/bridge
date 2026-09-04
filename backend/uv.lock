@@ -93,7 +93,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.25" },
     { name = "fastapi" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "llm-ontology-mapper", git = "https://github.com/courtotlab/llm-ontology-mapper.git?rev=575741dc947dd17be6b1125423d16100b3468012" },
+    { name = "llm-ontology-mapper", git = "https://github.com/courtotlab/llm-ontology-mapper.git?rev=26af393567a492bb7a6fcbbdd27872afe6a5a393" },
     { name = "ollama", specifier = ">=0.6.2" },
     { name = "openai", specifier = ">=1.30" },
     { name = "openpyxl" },
@@ -513,7 +513,7 @@ wheels = [
 [[package]]
 name = "llm-ontology-mapper"
 version = "0.1.0"
-source = { git = "https://github.com/courtotlab/llm-ontology-mapper.git?rev=575741dc947dd17be6b1125423d16100b3468012#575741dc947dd17be6b1125423d16100b3468012" }
+source = { git = "https://github.com/courtotlab/llm-ontology-mapper.git?rev=26af393567a492bb7a6fcbbdd27872afe6a5a393#26af393567a492bb7a6fcbbdd27872afe6a5a393" }
 dependencies = [
     { name = "diskcache" },
     { name = "httpx" },

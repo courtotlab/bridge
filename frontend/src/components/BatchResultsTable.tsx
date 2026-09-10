@@ -185,6 +185,7 @@ export default function BatchResultsTable({
                                 retrievalMode: row.retrieval_mode,
                                 configuredProvider: row.configured_provider,
                                 configuredModel: row.configured_model,
+                                processingTimeSeconds: row.processing_time_seconds,
                               }}
                             />
                           )}
@@ -210,6 +211,7 @@ export default function BatchResultsTable({
                                 retrievalMode: row.retrieval_mode,
                                 configuredProvider: row.configured_provider,
                                 configuredModel: row.configured_model,
+                                processingTimeSeconds: row.processing_time_seconds,
                               }}
                             />
                           </div>

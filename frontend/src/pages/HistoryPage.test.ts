@@ -301,6 +301,167 @@ describe('HistoryPage details', () => {
     );
   });
 
+  it('renders stored processing time for a new term-search history entry', async () => {
+    await openOnlySession(
+      {
+        id: 'term_search-1',
+        type: 'term_search',
+        status: 'complete',
+        created_at: createdAt,
+        completed_at: createdAt,
+        input: { source_term: 'sbp' },
+        configuration: { retrieval_method: 'local', provider: 'ollama', model: 'llama3.2' },
+        result: {
+          best_match: {
+            source_term: 'sbp',
+            target_code: 'LOINC:8480-6',
+            target_term: 'Systolic blood pressure',
+            ontology: 'LOINC',
+            confidence: 0.91,
+            logic_type: 'rag',
+            retrieval_mode: 'local',
+            configured_provider: 'ollama',
+            configured_model: 'llama3.2',
+            metadata: { model: 'llama3.2', provider: 'ollama', latency_ms: 4820 },
+            alternatives: [],
+          },
+          alternatives: [],
+        },
+      },
+      summary('term_search', { term: 'sbp' }),
+    );
+
+    await screen.findByText('Best match');
+    expect(screen.getByText('4.82 s')).toBeInTheDocument();
+  });
+
+  it('omits the processing-time line for a pre-feature term-search history entry', async () => {
+    await openOnlySession(
+      {
+        id: 'term_search-1',
+        type: 'term_search',
+        status: 'complete',
+        created_at: createdAt,
+        completed_at: createdAt,
+        input: { source_term: 'sbp' },
+        configuration: { retrieval_method: 'local', provider: 'ollama', model: 'llama3.2' },
+        result: {
+          best_match: {
+            source_term: 'sbp',
+            target_code: 'LOINC:8480-6',
+            target_term: 'Systolic blood pressure',
+            ontology: 'LOINC',
+            confidence: 0.91,
+            logic_type: 'rag',
+            retrieval_mode: 'local',
+            configured_provider: 'ollama',
+            configured_model: 'llama3.2',
+            // No `metadata` at all — a pre-feature stored snapshot.
+            alternatives: [],
+          },
+          alternatives: [],
+        },
+      },
+      summary('term_search', { term: 'sbp' }),
+    );
+
+    await screen.findByText('Best match');
+    expect(screen.queryByText(/processing time/i)).not.toBeInTheDocument();
+  });
+
+  it('renders stored per-row processing time in a new batch history entry', async () => {
+    await openOnlySession(
+      {
+        id: 'batch_map-1',
+        type: 'batch_map',
+        status: 'complete',
+        created_at: createdAt,
+        completed_at: createdAt,
+        input: { filename: 'dictionary.csv', row_count: 1 },
+        configuration: { target_ontologies: ['LOINC'], auto_accept_threshold: 0.85 },
+        result: {
+          total: 1,
+          completed: 1,
+          status: 'done',
+          summary: {
+            total_rows: 1,
+            completed_count: 1,
+            accepted_count: 1,
+            pending_count: 0,
+            rejected_count: 0,
+            unmapped_count: 0,
+          },
+          rows: [
+            {
+              row_index: 0,
+              field_name: 'sbp',
+              suggested_code: 'LOINC:8480-6',
+              suggested_term: 'Systolic blood pressure',
+              ontology: 'LOINC',
+              confidence: 0.92,
+              logic_type: 'rag',
+              decision: 'accepted',
+              notes: 'Strong match.',
+              alternatives: [],
+              processing_time_seconds: 4.82,
+            },
+          ],
+        },
+      },
+      summary('batch_map', { filename: 'dictionary.csv', row_count: 1 }),
+    );
+
+    expect(await screen.findByText('Archived Mappings')).toBeInTheDocument();
+    expect(screen.getByText('4.82 s')).toBeInTheDocument();
+  });
+
+  it('renders a pre-feature batch history entry (no processing_time_seconds) without errors', async () => {
+    await openOnlySession(
+      {
+        id: 'batch_map-1',
+        type: 'batch_map',
+        status: 'complete',
+        created_at: createdAt,
+        completed_at: createdAt,
+        input: { filename: 'dictionary.csv', row_count: 1 },
+        configuration: { target_ontologies: ['LOINC'], auto_accept_threshold: 0.85 },
+        result: {
+          total: 1,
+          completed: 1,
+          status: 'done',
+          summary: {
+            total_rows: 1,
+            completed_count: 1,
+            accepted_count: 1,
+            pending_count: 0,
+            rejected_count: 0,
+            unmapped_count: 0,
+          },
+          rows: [
+            {
+              row_index: 0,
+              field_name: 'sbp',
+              suggested_code: 'LOINC:8480-6',
+              suggested_term: 'Systolic blood pressure',
+              ontology: 'LOINC',
+              confidence: 0.92,
+              logic_type: 'rag',
+              decision: 'accepted',
+              notes: 'Strong match.',
+              alternatives: [],
+              // No processing_time_seconds — pre-feature stored snapshot.
+            },
+          ],
+        },
+      },
+      summary('batch_map', { filename: 'dictionary.csv', row_count: 1 }),
+    );
+
+    expect(await screen.findByText('Archived Mappings')).toBeInTheDocument();
+    expect(screen.getByText('sbp')).toBeInTheDocument();
+    expect(screen.queryByText(/processing time/i)).not.toBeInTheDocument();
+  });
+
   it('renders archived batch ontology links from the enriched history response', async () => {
     await openOnlySession(
       {

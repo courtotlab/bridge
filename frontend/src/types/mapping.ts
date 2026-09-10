@@ -75,6 +75,7 @@ export interface BatchRowResult {
   configured_model?: string;
   retrieval_mode?: RetrievalMode | null;
   suggested_url?: string | null; // derived ontology entity link — backend-computed
+  processing_time_seconds?: number | null; // mapper's own processing latency for this row
 }
 
 export interface BatchJobStatus {

@@ -105,6 +105,7 @@ class BatchRowResult(BaseModel):
     configured_model: str | None = None
     retrieval_mode: str | None = None
     suggested_url: str | None = None  # derived — see app.utils.ontology_urls
+    processing_time_seconds: float | None = None  # mapper's own latency_ms / 1000, for this row's mapping invocation
 
 
 class BatchMappingResponse(BaseModel):

@@ -2,7 +2,16 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import TermSearchResultView from './TermSearchResultView';
-import type { AlternativeResult, SingleMappingResponse } from '../types/mapping';
+import type { AlternativeResult, MappingMetadata, SingleMappingResponse } from '../types/mapping';
+
+function metadata(overrides: Partial<MappingMetadata> = {}): MappingMetadata {
+  return {
+    model: 'llama3.2',
+    provider: 'ollama',
+    latency_ms: 4820,
+    ...overrides,
+  };
+}
 
 function bestMatch(overrides: Partial<SingleMappingResponse> = {}): SingleMappingResponse {
   return {
@@ -104,6 +113,113 @@ describe('TermSearchResultView best-match link', () => {
     const link = screen.getByRole('link', { name: 'LOINC:8480-6' });
     link.focus();
     expect(link).toHaveFocus();
+  });
+});
+
+describe('TermSearchResultView processing time', () => {
+  it('renders "Processing time" in seconds when metadata.latency_ms is set', () => {
+    render(
+      <TermSearchResultView
+        bestMatch={bestMatch({ metadata: metadata({ latency_ms: 4820 }) })}
+        alternatives={[]}
+      />,
+    );
+
+    expect(screen.getByText(/processing time/i)).toBeInTheDocument();
+    expect(screen.getByText('4.82 s')).toBeInTheDocument();
+  });
+
+  it('formats a sub-second latency correctly', () => {
+    render(
+      <TermSearchResultView
+        bestMatch={bestMatch({ metadata: metadata({ latency_ms: 370 }) })}
+        alternatives={[]}
+      />,
+    );
+
+    expect(screen.getByText('0.37 s')).toBeInTheDocument();
+  });
+
+  it('formats a very small positive latency as "< 0.01 s"', () => {
+    render(
+      <TermSearchResultView
+        bestMatch={bestMatch({ metadata: metadata({ latency_ms: 4 }) })}
+        alternatives={[]}
+      />,
+    );
+
+    expect(screen.getByText('< 0.01 s')).toBeInTheDocument();
+  });
+
+  it('renders Processing time after Model in the metadata block', () => {
+    render(
+      <TermSearchResultView
+        bestMatch={bestMatch({ metadata: metadata({ latency_ms: 4820 }) })}
+        alternatives={[]}
+      />,
+    );
+
+    const lines = Array.from(document.querySelectorAll('.result-meta-line')).map(
+      (el) => el.textContent,
+    );
+    const modelIndex = lines.findIndex((text) => text?.startsWith('Model:'));
+    const processingIndex = lines.findIndex((text) => text?.startsWith('Processing time:'));
+    expect(modelIndex).toBeGreaterThanOrEqual(0);
+    expect(processingIndex).toBe(modelIndex + 1);
+  });
+
+  it('omits the Processing time line when metadata is absent', () => {
+    render(
+      <TermSearchResultView bestMatch={bestMatch({ metadata: undefined })} alternatives={[]} />,
+    );
+
+    expect(screen.queryByText(/processing time/i)).not.toBeInTheDocument();
+  });
+
+  it('omits the Processing time line when metadata.latency_ms is null', () => {
+    render(
+      <TermSearchResultView
+        bestMatch={bestMatch({ metadata: { ...metadata(), latency_ms: undefined } })}
+        alternatives={[]}
+      />,
+    );
+
+    expect(screen.queryByText(/processing time/i)).not.toBeInTheDocument();
+  });
+
+  it('a promoted alternative keeps the original processing time (metadata carried via spread)', () => {
+    // Mirrors SearchPage.handlePromote, which spreads {...bestMatch} and only
+    // overrides candidate-specific fields — metadata (and thus latency_ms)
+    // must survive unchanged.
+    const original = bestMatch({ metadata: metadata({ latency_ms: 4820 }) });
+    const promoted: SingleMappingResponse = {
+      ...original,
+      target_code: 'LOINC:76534-7',
+      target_term: 'Diastolic blood pressure',
+      confidence: 0.55,
+    };
+
+    render(<TermSearchResultView bestMatch={promoted} alternatives={[]} />);
+
+    expect(screen.getByText('4.82 s')).toBeInTheDocument();
+  });
+
+  it('does not affect existing ontology link rendering or copy behavior', async () => {
+    const user = userEvent.setup();
+    const onCopy = vi.fn();
+    render(
+      <TermSearchResultView
+        bestMatch={bestMatch({ metadata: metadata({ latency_ms: 4820 }) })}
+        alternatives={[]}
+        onCopy={onCopy}
+      />,
+    );
+
+    const link = screen.getByRole('link', { name: 'LOINC:8480-6' });
+    expect(link).toHaveAttribute('href', 'https://loinc.org/8480-6');
+
+    await user.click(screen.getByRole('button', { name: /copy code: loinc:8480-6/i }));
+    expect(onCopy).toHaveBeenCalledTimes(1);
   });
 });
 

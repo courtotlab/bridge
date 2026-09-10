@@ -429,6 +429,130 @@ def test_batch_detail_url_follows_returned_code_not_requested_ontology():
     assert "ontologies/hp/" in row.suggested_url
 
 
+def test_term_search_detail_preserves_metadata_latency():
+    detail = normalize_history_details(
+        _record(
+            "term_search",
+            InputSummary(term="sbp", target_ontologies=["LOINC"]),
+            {
+                "source_term": "sbp",
+                "target_code": "LOINC:8480-6",
+                "target_term": "Systolic blood pressure",
+                "ontology": "LOINC",
+                "confidence": 0.91,
+                "logic_type": "rag",
+                "metadata": {
+                    "model": "llama3.2",
+                    "provider": "ollama",
+                    "latency_ms": 4820.0,
+                },
+                "alternatives": [],
+            },
+        )
+    )
+
+    assert detail.result.best_match is not None
+    assert detail.result.best_match.metadata is not None
+    assert detail.result.best_match.metadata.latency_ms == 4820.0
+
+
+def test_term_search_detail_old_snapshot_without_latency_loads_as_none():
+    # Pre-feature snapshot — no "metadata" key at all. Must still load, with
+    # no migration, and simply carry no processing-time value.
+    detail = normalize_history_details(
+        _record(
+            "term_search",
+            InputSummary(term="sbp"),
+            {
+                "source_term": "sbp",
+                "target_code": "LOINC:8480-6",
+                "target_term": "Systolic blood pressure",
+                "ontology": "LOINC",
+                "confidence": 0.91,
+                "logic_type": "rag",
+                "alternatives": [],
+            },
+        )
+    )
+
+    assert detail.result.best_match is not None
+    assert detail.result.best_match.metadata is None
+
+
+def test_batch_detail_preserves_row_processing_time_seconds():
+    detail = normalize_history_details(
+        _record(
+            "batch_map",
+            InputSummary(filename="dictionary.csv", row_count=2),
+            {
+                "job_id": "job-1",
+                "total": 2,
+                "completed": 2,
+                "status": "done",
+                "results": [
+                    {
+                        "row_index": 0,
+                        "field_name": "sbp",
+                        "suggested_code": "LOINC:8480-6",
+                        "suggested_term": "Systolic blood pressure",
+                        "ontology": "LOINC",
+                        "confidence": 0.92,
+                        "logic_type": "rag",
+                        "decision": "accepted",
+                        "alternatives": [],
+                        "processing_time_seconds": 1.2,
+                    },
+                    {
+                        "row_index": 1,
+                        "field_name": "temp",
+                        "suggested_code": "LOINC:8310-5",
+                        "suggested_term": "Body temperature",
+                        "ontology": "LOINC",
+                        "confidence": 0.88,
+                        "logic_type": "rag",
+                        "decision": "accepted",
+                        "alternatives": [],
+                        "processing_time_seconds": 7.4,
+                    },
+                ],
+            },
+        )
+    )
+
+    assert [row.processing_time_seconds for row in detail.result.rows] == [1.2, 7.4]
+
+
+def test_batch_detail_old_rows_without_processing_time_load_as_none():
+    # Pre-feature batch snapshot — rows have no "processing_time_seconds" key.
+    detail = normalize_history_details(
+        _record(
+            "batch_map",
+            InputSummary(filename="dictionary.csv", row_count=1),
+            {
+                "job_id": "job-1",
+                "total": 1,
+                "completed": 1,
+                "status": "done",
+                "results": [
+                    {
+                        "row_index": 0,
+                        "field_name": "sbp",
+                        "suggested_code": "LOINC:8480-6",
+                        "suggested_term": "Systolic blood pressure",
+                        "ontology": "LOINC",
+                        "confidence": 0.92,
+                        "logic_type": "rag",
+                        "decision": "accepted",
+                        "alternatives": [],
+                    }
+                ],
+            },
+        )
+    )
+
+    assert detail.result.rows[0].processing_time_seconds is None
+
+
 def test_batch_detail_unmapped_row_has_no_url():
     detail = normalize_history_details(
         _record(

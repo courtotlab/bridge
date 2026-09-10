@@ -699,6 +699,13 @@ def start_batch_job(
                 if hasattr(logic_type_val, "value"):
                     logic_type_val = logic_type_val.value
 
+                processing_time_seconds = (
+                    result.metadata.latency_ms / 1000.0
+                    if result.metadata is not None
+                    and result.metadata.latency_ms is not None
+                    else None
+                )
+
                 alternatives = [
                     AlternativeResult(
                         code=a.code,
@@ -739,6 +746,7 @@ def start_batch_job(
                         mapping_warning,
                     ),
                     suggested_url=resolve_ontology_url(target_code, ontology),
+                    processing_time_seconds=processing_time_seconds,
                 )
             except PlannedPipelineError as exc:
                 logger.exception(

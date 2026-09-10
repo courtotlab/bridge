@@ -1,5 +1,6 @@
 import { getOntologyDisplayName } from '../constants/ontologies';
 import type { AlternativeResult, SingleMappingResponse } from '../types/mapping';
+import { formatProcessingTime } from '../utils/formatDuration';
 import { getMappingExplanation } from '../utils/mappingDetails';
 import { formatRetrievalMode, RETRIEVAL_MODE_TOOLTIP } from '../utils/retrievalMode';
 import InfoTooltip from './InfoTooltip';
@@ -149,6 +150,11 @@ export default function TermSearchResultView({
               label="About model"
               tooltip="The model configured in Bridge settings"
             />
+          </p>
+        )}
+        {bestMatch.metadata?.latency_ms != null && (
+          <p className="result-meta-line">
+            Processing time: <strong>{formatProcessingTime(bestMatch.metadata.latency_ms / 1000)}</strong>
           </p>
         )}
 

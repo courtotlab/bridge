@@ -132,6 +132,47 @@ def test_complete_session_strips_derived_batch_urls_before_persisting(temp_sessi
     assert row["alternatives"][0]["code"] == "LOINC:76534-7"
 
 
+def test_complete_session_preserves_batch_processing_time_seconds(temp_session_store):
+    session_id = _create_batch_session(temp_session_store)
+    snapshot = _snapshot_with_urls("done", 2, "sbp")
+    snapshot["results"][0]["processing_time_seconds"] = 4.82
+
+    temp_session_store.complete_session(session_id, "complete", snapshot)
+
+    record = temp_session_store.get_session(session_id)
+    row = record.result_snapshot["results"][0]
+    # Processing time is historical execution data, not derived data like the
+    # ontology URLs stripped above — the URL-stripping helper must not touch it.
+    assert row["processing_time_seconds"] == 4.82
+
+
+def test_complete_session_preserves_term_search_metadata_latency(temp_session_store):
+    session_id = temp_session_store.create_session(
+        "term_search",
+        InputSummary(term="sbp"),
+    )
+    snapshot = {
+        "source_term": "sbp",
+        "target_code": "LOINC:8480-6",
+        "target_term": "Systolic blood pressure",
+        "ontology": "LOINC",
+        "confidence": 0.9,
+        "logic_type": "rag",
+        "target_url": "https://loinc.org/8480-6",
+        "metadata": {
+            "model": "llama3.2",
+            "provider": "ollama",
+            "latency_ms": 4820.0,
+        },
+        "alternatives": [],
+    }
+
+    temp_session_store.complete_session(session_id, "complete", snapshot)
+
+    record = temp_session_store.get_session(session_id)
+    assert record.result_snapshot["metadata"]["latency_ms"] == 4820.0
+
+
 def test_complete_session_strips_derived_term_search_url(temp_session_store):
     session_id = temp_session_store.create_session(
         "term_search",

@@ -18,6 +18,7 @@ def _result(
     ontology: str = "HPO",
     confidence: float = 0.91,
     alternatives: list | None = None,
+    metadata=None,
 ):
     return SimpleNamespace(
         target_code=code,
@@ -27,7 +28,18 @@ def _result(
         logic_type="rag",
         notes="Mapped.",
         alternatives=alternatives or [],
-        metadata=None,
+        metadata=metadata,
+    )
+
+
+def _metadata(*, latency_ms: float | None = 4820.0):
+    return SimpleNamespace(
+        model="llama3.2",
+        provider="ollama",
+        latency_ms=latency_ms,
+        timestamp=None,
+        prompt_tokens=None,
+        completion_tokens=None,
     )
 
 
@@ -790,6 +802,273 @@ def test_batch_mapping_runs_with_planned_mapper_and_normalizes_unmapped(monkeypa
     assert "use_rag" not in kwargs
     assert "ontology_retriever" not in kwargs
     assert mapper_instance.map_term.call_count == 2
+
+
+def test_single_mapping_response_preserves_mapper_latency_ms(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(metadata=_metadata(latency_ms=4820.0))
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+
+    response = mapper_service.map_single_term(SingleMappingRequest(source_term="seizure"))
+
+    # The value crosses unchanged, still in milliseconds — Bridge does not
+    # convert units or measure its own timer for the single-term path.
+    assert response.metadata is not None
+    assert response.metadata.latency_ms == 4820.0
+
+
+def test_single_mapping_response_latency_is_none_when_mapper_metadata_absent(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(metadata=None)
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+
+    response = mapper_service.map_single_term(SingleMappingRequest(source_term="seizure"))
+
+    assert response.metadata is None
+
+
+def test_batch_row_converts_mapper_latency_ms_to_processing_time_seconds(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(metadata=_metadata(latency_ms=4820.0))
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "sbp", "label": "Systolic blood pressure"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area="measurement",
+        target_ontologies=None,
+        auto_accept_threshold=0.85,
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    assert job["results"][0].processing_time_seconds == 4.82
+
+
+def test_batch_rows_preserve_distinct_processing_times(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.side_effect = [
+        _result(code="LOINC:8480-6", metadata=_metadata(latency_ms=1200.0)),
+        _result(code="LOINC:8310-5", metadata=_metadata(latency_ms=7400.0)),
+    ]
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[
+            {"field_name": "sbp", "label": "Systolic blood pressure"},
+            {"field_name": "temp", "label": "Body temperature"},
+        ],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area="measurement",
+        target_ontologies=None,
+        auto_accept_threshold=0.85,
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    assert job["results"][0].processing_time_seconds == 1.2
+    assert job["results"][1].processing_time_seconds == 7.4
+
+
+def test_batch_row_processing_time_is_none_when_mapper_latency_missing(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(metadata=None)
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "sbp", "label": "Systolic blood pressure"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area="measurement",
+        target_ontologies=None,
+        auto_accept_threshold=0.85,
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    assert job["results"][0].processing_time_seconds is None
+
+
+def test_batch_unmapped_row_preserves_processing_time_when_metadata_present(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="UNKNOWN:UNMAPPED",
+        term="UNMAPPED",
+        ontology="UNKNOWN",
+        confidence=0.0,
+        metadata=_metadata(latency_ms=930.0),
+    )
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "x", "label": "No match"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area="measurement",
+        target_ontologies=None,
+        auto_accept_threshold=0.85,
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    assert job["results"][0].suggested_code == "UNMAPPED"
+    assert job["results"][0].processing_time_seconds == 0.93
+
+
+def test_batch_exception_row_has_no_processing_time(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.side_effect = RuntimeError("planner exploded")
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "sbp", "label": "Systolic blood pressure"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area="measurement",
+        target_ontologies=None,
+        auto_accept_threshold=0.85,
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    # No MappingResult was produced, so no latency is fabricated or backfilled
+    # from exception/elapsed-time information.
+    assert job["results"][0].processing_time_seconds is None
+
+
+@pytest.mark.parametrize("mode", ["public", "local"])
+def test_batch_processing_time_conversion_is_identical_across_retrieval_modes(
+    monkeypatch, mode
+):
+    config = AppConfig(
+        provider="ollama",
+        model="llama3.2",
+        retrieval_mode=mode,
+        sapbert_server_url="http://localhost:8765",
+    )
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    monkeypatch.setattr(
+        "llm_ontology_mapper.LocalSemanticRetriever", MagicMock(return_value=object())
+    )
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(metadata=_metadata(latency_ms=4820.0))
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "sbp", "label": "Systolic blood pressure"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area="measurement",
+        target_ontologies=None,
+        auto_accept_threshold=0.85,
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    # The ms -> s conversion in mapper_service is not branched on retrieval
+    # mode — same mapper-reported latency yields the same seconds value.
+    assert job["results"][0].processing_time_seconds == 4.82
+
+
+def test_batch_alternative_promotion_preserves_processing_time_seconds(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        alternatives=[
+            SimpleNamespace(
+                code="LOINC:76215-3",
+                term="Systolic blood pressure alt",
+                ontology="LOINC",
+                confidence=0.6,
+                source="rag",
+                explanation=None,
+            )
+        ],
+        metadata=_metadata(latency_ms=4820.0),
+    )
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "sbp", "label": "Systolic blood pressure"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area="measurement",
+        target_ontologies=None,
+        auto_accept_threshold=0.85,
+    )
+
+    promoted = mapper_service.promote_batch_alternative(
+        job_id, row_index=0, alternative_code="LOINC:76215-3"
+    )
+
+    assert promoted is not None
+    assert promoted.suggested_code == "LOINC:76215-3"
+    # Promotion changes the selected candidate, not the mapping invocation's
+    # own processing time.
+    assert promoted.processing_time_seconds == 4.82
 
 
 def test_batch_mapping_preserves_original_row_and_passes_source_description(monkeypatch):

@@ -116,3 +116,81 @@ describe('BatchResultsTable ontology links', () => {
     expect(onPromoteAlternative).not.toHaveBeenCalled();
   });
 });
+
+describe('BatchResultsTable processing time', () => {
+  it('shows PROCESSING TIME with the row value in the details card', () => {
+    renderTable([
+      row({
+        processing_time_seconds: 4.82,
+        notes: 'Strong lexical match.',
+        configured_provider: 'ollama',
+        configured_model: 'llama3.2',
+      }),
+    ]);
+
+    expect(screen.getByText('Processing time')).toBeInTheDocument();
+    expect(screen.getByText('4.82 s')).toBeInTheDocument();
+  });
+
+  it('renders Processing time directly after Model in the details card', () => {
+    renderTable([
+      row({
+        processing_time_seconds: 4.82,
+        notes: 'Strong lexical match.',
+        configured_provider: 'ollama',
+        configured_model: 'llama3.2',
+      }),
+    ]);
+
+    const sections = Array.from(
+      document.querySelectorAll('.mapping-details-tooltip-label'),
+    ).map((el) => el.textContent);
+    const modelIndex = sections.indexOf('Model');
+    const processingIndex = sections.indexOf('Processing time');
+    expect(modelIndex).toBeGreaterThanOrEqual(0);
+    expect(processingIndex).toBe(modelIndex + 1);
+  });
+
+  it('shows a different processing time for each row', () => {
+    renderTable([
+      row({ row_index: 0, field_name: 'sbp', processing_time_seconds: 1.2, notes: 'Row A' }),
+      row({ row_index: 1, field_name: 'temp', suggested_code: 'LOINC:8310-5', processing_time_seconds: 7.4, notes: 'Row B' }),
+    ]);
+
+    expect(screen.getByText('1.2 s')).toBeInTheDocument();
+    expect(screen.getByText('7.4 s')).toBeInTheDocument();
+  });
+
+  it('omits the Processing time section when the value is missing', () => {
+    renderTable([row({ processing_time_seconds: undefined, notes: 'Strong lexical match.' })]);
+
+    expect(screen.queryByText('Processing time')).not.toBeInTheDocument();
+  });
+
+  it('does not add a visible table column for processing time', () => {
+    renderTable([row({ processing_time_seconds: 4.82 })]);
+
+    const headers = Array.from(document.querySelectorAll('th')).map((el) => el.textContent);
+    expect(headers.some((h) => /processing time/i.test(h ?? ''))).toBe(false);
+  });
+
+  it('leaves existing links, decision buttons, and promotion unaffected', async () => {
+    const user = userEvent.setup();
+    const alt = alternative();
+    const { onPromoteAlternative } = renderTable([
+      row({ processing_time_seconds: 4.82, alternatives: [alt] }),
+    ]);
+
+    expect(screen.getByRole('link', { name: 'LOINC:8480-6' })).toHaveAttribute(
+      'href',
+      'https://loinc.org/8480-6',
+    );
+
+    await user.click(screen.getByTitle('Accept'));
+    await user.click(
+      screen.getByRole('button', { name: `Use ${alt.code} as the suggested mapping` }),
+    );
+
+    expect(onPromoteAlternative).toHaveBeenCalledWith(expect.objectContaining({ row_index: 0 }), alt);
+  });
+});

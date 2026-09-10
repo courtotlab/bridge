@@ -1,5 +1,6 @@
 import type { RetrievalMode } from '../types/config';
 import type { MappingMetadata } from '../types/mapping';
+import { formatProcessingTime } from './formatDuration';
 import { formatRetrievalMode } from './retrievalMode';
 
 export interface MappingDetailsInput {
@@ -10,6 +11,7 @@ export interface MappingDetailsInput {
   configuredProvider?: string | null;
   configuredModel?: string | null;
   metadata?: MappingMetadata | null;
+  processingTimeSeconds?: number | null;
 }
 
 export interface MappingDetailSection {
@@ -69,6 +71,12 @@ export function getMappingDetailSections(
   }
   if (model) {
     sections.push({ label: 'Model', value: model });
+  }
+  if (details.processingTimeSeconds != null) {
+    sections.push({
+      label: 'Processing time',
+      value: formatProcessingTime(details.processingTimeSeconds),
+    });
   }
 
   return sections;

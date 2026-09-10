@@ -301,3 +301,159 @@ def test_batch_history_csv_uses_enriched_export_serializer(monkeypatch):
         "source_variable,source_description,custom,target_ontology,mapped_code"
     )
     assert "sbp,Measured seated.,alpha,LOINC,LOINC:8480-6" in response.text
+
+
+def test_term_search_detail_recomputes_url_for_legacy_snapshot_without_url_field():
+    # Legacy snapshot predating this feature — no target_url/alternatives[].url
+    # keys at all. Must still get a working link, with no migration.
+    detail = normalize_history_details(
+        _record(
+            "term_search",
+            InputSummary(term="sbp", target_ontologies=["LOINC"]),
+            {
+                "source_term": "sbp",
+                "target_code": "LOINC:8480-6",
+                "target_term": "Systolic blood pressure",
+                "ontology": "LOINC",
+                "confidence": 0.91,
+                "logic_type": "rag",
+                "alternatives": [
+                    {
+                        "code": "LOINC:76534-7",
+                        "term": "Diastolic blood pressure",
+                        "ontology": "LOINC",
+                        "confidence": 0.55,
+                    }
+                ],
+            },
+        )
+    )
+
+    assert detail.result.best_match is not None
+    assert detail.result.best_match.target_url == "https://loinc.org/8480-6"
+    assert detail.result.alternatives[0].url == "https://loinc.org/76534-7"
+
+
+def test_term_search_detail_ignores_stale_stored_url_and_recomputes():
+    # Even if a stored snapshot happens to contain a (possibly stale) url,
+    # the history API must recompute rather than trust it.
+    detail = normalize_history_details(
+        _record(
+            "term_search",
+            InputSummary(term="sbp"),
+            {
+                "source_term": "sbp",
+                "target_code": "LOINC:8480-6",
+                "target_term": "Systolic blood pressure",
+                "ontology": "LOINC",
+                "confidence": 0.91,
+                "logic_type": "rag",
+                "target_url": "https://example.com/stale-or-wrong-url",
+                "alternatives": [],
+            },
+        )
+    )
+
+    assert detail.result.best_match.target_url == "https://loinc.org/8480-6"
+
+
+def test_batch_detail_recomputes_suggested_url_for_legacy_snapshot():
+    detail = normalize_history_details(
+        _record(
+            "batch_map",
+            InputSummary(filename="dictionary.csv", row_count=1),
+            {
+                "job_id": "job-1",
+                "total": 1,
+                "completed": 1,
+                "status": "done",
+                "results": [
+                    {
+                        "row_index": 0,
+                        "field_name": "sbp",
+                        "suggested_code": "LOINC:8480-6",
+                        "suggested_term": "Systolic blood pressure",
+                        "ontology": "LOINC",
+                        "confidence": 0.92,
+                        "logic_type": "rag",
+                        "decision": "accepted",
+                        "alternatives": [
+                            {
+                                "code": "LOINC:76215-3",
+                                "term": "Systolic blood pressure alt",
+                                "ontology": "LOINC",
+                                "confidence": 0.4,
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+    )
+
+    row = detail.result.rows[0]
+    assert row.suggested_url == "https://loinc.org/8480-6"
+    assert row.alternatives[0].url == "https://loinc.org/76215-3"
+
+
+def test_batch_detail_url_follows_returned_code_not_requested_ontology():
+    detail = normalize_history_details(
+        _record(
+            "batch_map",
+            InputSummary(filename="dictionary.csv", row_count=1, target_ontologies=["EFO"]),
+            {
+                "job_id": "job-1",
+                "total": 1,
+                "completed": 1,
+                "status": "done",
+                "results": [
+                    {
+                        "row_index": 0,
+                        "field_name": "seizure",
+                        "requested_target_ontology": "EFO",
+                        "suggested_code": "HP:0001250",
+                        "suggested_term": "Seizure",
+                        "ontology": "HPO",
+                        "confidence": 0.9,
+                        "logic_type": "rag",
+                        "decision": "accepted",
+                        "alternatives": [],
+                    }
+                ],
+            },
+        )
+    )
+
+    row = detail.result.rows[0]
+    assert row.suggested_url is not None
+    assert "ontologies/hp/" in row.suggested_url
+
+
+def test_batch_detail_unmapped_row_has_no_url():
+    detail = normalize_history_details(
+        _record(
+            "batch_map",
+            InputSummary(filename="dictionary.csv", row_count=1),
+            {
+                "job_id": "job-1",
+                "total": 1,
+                "completed": 1,
+                "status": "done",
+                "results": [
+                    {
+                        "row_index": 0,
+                        "field_name": "unknown",
+                        "suggested_code": "UNMAPPED",
+                        "suggested_term": "Unmapped",
+                        "ontology": "",
+                        "confidence": 0,
+                        "logic_type": "none",
+                        "decision": "rejected",
+                        "alternatives": [],
+                    }
+                ],
+            },
+        )
+    )
+
+    assert detail.result.rows[0].suggested_url is None

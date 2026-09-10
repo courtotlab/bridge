@@ -240,4 +240,127 @@ describe('HistoryPage details', () => {
     expect(await screen.findByText('Detailed results were not stored for this earlier session.')).toBeInTheDocument();
     await waitFor(() => expect(screen.queryByText('null')).not.toBeInTheDocument());
   });
+
+  it('renders archived term search ontology links from the enriched history response', async () => {
+    await openOnlySession(
+      {
+        id: 'term_search-1',
+        type: 'term_search',
+        status: 'complete',
+        created_at: createdAt,
+        completed_at: createdAt,
+        input: { source_term: 'sbp', source_label: 'Systolic BP' },
+        configuration: { retrieval_method: 'local', provider: 'ollama', model: 'llama3.2' },
+        result: {
+          best_match: {
+            source_term: 'sbp',
+            source_label: 'Systolic BP',
+            source_type: 'numeric',
+            target_code: 'LOINC:8480-6',
+            target_term: 'Systolic blood pressure',
+            ontology: 'LOINC',
+            confidence: 0.91,
+            logic_type: 'rag',
+            notes: 'Strong match.',
+            retrieval_mode: 'local',
+            configured_provider: 'ollama',
+            configured_model: 'llama3.2',
+            target_url: 'https://loinc.org/8480-6',
+            alternatives: [
+              {
+                code: 'LOINC:8462-4',
+                term: 'Diastolic blood pressure',
+                ontology: 'LOINC',
+                confidence: 0.62,
+                url: 'https://loinc.org/8462-4',
+              },
+            ],
+          },
+          alternatives: [
+            {
+              code: 'LOINC:8462-4',
+              term: 'Diastolic blood pressure',
+              ontology: 'LOINC',
+              confidence: 0.62,
+              url: 'https://loinc.org/8462-4',
+            },
+          ],
+        },
+      },
+      summary('term_search', { term: 'sbp', target_ontologies: ['LOINC'] }),
+    );
+
+    await screen.findByText('Best match');
+    expect(screen.getByRole('link', { name: 'LOINC:8480-6' })).toHaveAttribute(
+      'href',
+      'https://loinc.org/8480-6',
+    );
+    expect(screen.getByRole('link', { name: 'LOINC:8462-4' })).toHaveAttribute(
+      'href',
+      'https://loinc.org/8462-4',
+    );
+  });
+
+  it('renders archived batch ontology links from the enriched history response', async () => {
+    await openOnlySession(
+      {
+        id: 'batch_map-1',
+        type: 'batch_map',
+        status: 'complete',
+        created_at: createdAt,
+        completed_at: createdAt,
+        input: { filename: 'dictionary.csv', row_count: 1 },
+        configuration: { target_ontologies: ['LOINC'], auto_accept_threshold: 0.85 },
+        result: {
+          total: 1,
+          completed: 1,
+          status: 'done',
+          summary: {
+            total_rows: 1,
+            completed_count: 1,
+            accepted_count: 1,
+            pending_count: 0,
+            rejected_count: 0,
+            unmapped_count: 0,
+          },
+          rows: [
+            {
+              row_index: 0,
+              field_name: 'sbp',
+              label: 'Systolic BP',
+              suggested_code: 'LOINC:8480-6',
+              suggested_term: 'Systolic blood pressure',
+              ontology: 'LOINC',
+              confidence: 0.92,
+              logic_type: 'rag',
+              decision: 'accepted',
+              suggested_url: 'https://loinc.org/8480-6',
+              alternatives: [
+                {
+                  code: 'LOINC:8462-4',
+                  term: 'Diastolic blood pressure',
+                  ontology: 'LOINC',
+                  confidence: 0.5,
+                  url: 'https://loinc.org/8462-4',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      summary('batch_map', { filename: 'dictionary.csv', row_count: 1 }),
+    );
+
+    expect(await screen.findByText('Archived Mappings')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'LOINC:8480-6' })).toHaveAttribute(
+      'href',
+      'https://loinc.org/8480-6',
+    );
+
+    await userEvent.click(screen.getByTitle('Show alternatives'));
+    expect(screen.getByRole('link', { name: 'LOINC:8462-4' })).toHaveAttribute(
+      'href',
+      'https://loinc.org/8462-4',
+    );
+  });
 });

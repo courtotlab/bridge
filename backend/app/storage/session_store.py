@@ -11,6 +11,45 @@ _INDEX_FILE = _SESSION_DIR / "index.json"
 _lock = threading.Lock()
 _TERMINAL_SESSION_STATUSES = {"complete", "error", "interrupted"}
 
+# Ontology entity URLs (SingleMappingResponse.target_url, BatchRowResult
+# .suggested_url, AlternativeResult.url) are derived from persisted CURIE
+# codes at read time (see app.utils.ontology_urls.resolve_ontology_url /
+# app.api.history's recompute helpers) and must never be written to history
+# as durable data — strip them from every snapshot before it reaches disk.
+_DERIVED_MAPPING_URL_FIELDS = ("target_url", "suggested_url")
+
+
+def _stripped_alternatives(alternatives) -> object:
+    if not isinstance(alternatives, list):
+        return alternatives
+    cleaned = []
+    for alt in alternatives:
+        if isinstance(alt, dict):
+            alt = {k: v for k, v in alt.items() if k != "url"}
+        cleaned.append(alt)
+    return cleaned
+
+
+def _strip_derived_ontology_urls(snapshot: dict | None) -> dict | None:
+    if not isinstance(snapshot, dict):
+        return snapshot
+    cleaned = dict(snapshot)
+    for field in _DERIVED_MAPPING_URL_FIELDS:
+        cleaned.pop(field, None)
+    if "alternatives" in cleaned:
+        cleaned["alternatives"] = _stripped_alternatives(cleaned["alternatives"])
+    if "results" in cleaned and isinstance(cleaned["results"], list):
+        new_results = []
+        for row in cleaned["results"]:
+            if isinstance(row, dict):
+                row = dict(row)
+                row.pop("suggested_url", None)
+                if "alternatives" in row:
+                    row["alternatives"] = _stripped_alternatives(row["alternatives"])
+            new_results.append(row)
+        cleaned["results"] = new_results
+    return cleaned
+
 
 def _session_filename(created_at: datetime, session_id: str) -> str:
     return f"session_{created_at.strftime('%Y%m%d_%H%M%S')}_{session_id[:8]}.json"
@@ -100,7 +139,7 @@ def complete_session(
         ):
             return
         record.status = status  # type: ignore[assignment]
-        record.result_snapshot = result_snapshot
+        record.result_snapshot = _strip_derived_ontology_urls(result_snapshot)
         record.updated_at = datetime.now(timezone.utc)
         filepath.write_text(record.model_dump_json(indent=2), encoding="utf-8")
         index[session_id] = _to_index_entry(record, entry["filename"])

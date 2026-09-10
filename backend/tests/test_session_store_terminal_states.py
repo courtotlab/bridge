@@ -100,3 +100,66 @@ def test_duplicate_interrupted_finalization_can_enrich_snapshot(temp_session_sto
     record = temp_session_store.get_session(session_id)
     assert record.status == "interrupted"
     assert record.result_snapshot == enriched
+
+
+def _snapshot_with_urls(status: str, completed: int, field_name: str):
+    snapshot = _snapshot(status, completed, field_name)
+    snapshot["results"][0]["suggested_url"] = "https://loinc.org/8480-6"
+    snapshot["results"][0]["alternatives"] = [
+        {
+            "code": "LOINC:76534-7",
+            "term": "Diastolic blood pressure",
+            "ontology": "LOINC",
+            "confidence": 0.5,
+            "url": "https://loinc.org/76534-7",
+        }
+    ]
+    return snapshot
+
+
+def test_complete_session_strips_derived_batch_urls_before_persisting(temp_session_store):
+    session_id = _create_batch_session(temp_session_store)
+    snapshot = _snapshot_with_urls("done", 2, "sbp")
+
+    temp_session_store.complete_session(session_id, "complete", snapshot)
+
+    record = temp_session_store.get_session(session_id)
+    row = record.result_snapshot["results"][0]
+    assert "suggested_url" not in row
+    assert "url" not in row["alternatives"][0]
+    # Everything else is preserved untouched.
+    assert row["suggested_code"] == "LOINC:8480-6"
+    assert row["alternatives"][0]["code"] == "LOINC:76534-7"
+
+
+def test_complete_session_strips_derived_term_search_url(temp_session_store):
+    session_id = temp_session_store.create_session(
+        "term_search",
+        InputSummary(term="sbp"),
+    )
+    snapshot = {
+        "source_term": "sbp",
+        "target_code": "LOINC:8480-6",
+        "target_term": "Systolic blood pressure",
+        "ontology": "LOINC",
+        "confidence": 0.9,
+        "logic_type": "rag",
+        "target_url": "https://loinc.org/8480-6",
+        "alternatives": [
+            {
+                "code": "LOINC:76534-7",
+                "term": "Diastolic blood pressure",
+                "ontology": "LOINC",
+                "confidence": 0.5,
+                "url": "https://loinc.org/76534-7",
+            }
+        ],
+    }
+
+    temp_session_store.complete_session(session_id, "complete", snapshot)
+
+    record = temp_session_store.get_session(session_id)
+    assert "target_url" not in record.result_snapshot
+    assert "url" not in record.result_snapshot["alternatives"][0]
+    # The underlying code/term data is untouched.
+    assert record.result_snapshot["target_code"] == "LOINC:8480-6"

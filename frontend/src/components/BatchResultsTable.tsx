@@ -192,7 +192,17 @@ export default function BatchResultsTable({
                       ) : (
                         <>
                           <div className="batch-code-main">
-                            <span>{row.suggested_code}</span>
+                            {row.suggested_url ? (
+                              <a
+                                href={row.suggested_url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                              >
+                                {row.suggested_code}
+                              </a>
+                            ) : (
+                              <span>{row.suggested_code}</span>
+                            )}
                             <MappingDetailsTooltip
                               code={row.suggested_code}
                               details={{
@@ -263,7 +273,17 @@ export default function BatchResultsTable({
                           {row.alternatives.map((alt) => (
                             <div key={`${alt.ontology}:${alt.code}`} className="batch-alt-item">
                               <span className="batch-alt-code">
-                                <span>{alt.code}</span>
+                                {alt.url ? (
+                                  <a
+                                    href={alt.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                  >
+                                    {alt.code}
+                                  </a>
+                                ) : (
+                                  <span>{alt.code}</span>
+                                )}
                                 {(alt.explanation || alt.source) && (
                                   <MappingDetailsTooltip
                                     code={alt.code}

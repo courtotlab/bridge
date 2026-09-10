@@ -8,6 +8,7 @@ from fastapi.responses import Response
 from pydantic import BaseModel, ValidationError
 
 from app.models.mapping import (
+    AlternativeResult,
     BatchMappingResponse,
     BatchRowResult,
     SingleMappingResponse,
@@ -39,6 +40,7 @@ from app.storage.session_store import (
     get_session,
 )
 from app.utils.batch_export import build_batch_rows_csv
+from app.utils.ontology_urls import resolve_ontology_url
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -59,6 +61,36 @@ class AppendEventRequest(BaseModel):
 class CompleteSessionRequest(BaseModel):
     status: Literal["complete", "error", "interrupted"]
     result_snapshot: dict | None = None
+
+
+def _with_resolved_alternative_urls(
+    alternatives: list[AlternativeResult],
+) -> list[AlternativeResult]:
+    """Recompute each alternative's URL from its stored code — never trust a
+    stored value, since ontology URLs are derived data (see
+    app.storage.session_store, which strips them before persisting)."""
+    return [
+        alt.model_copy(update={"url": resolve_ontology_url(alt.code, alt.ontology)})
+        for alt in alternatives
+    ]
+
+
+def _with_resolved_mapping_url(response: SingleMappingResponse) -> SingleMappingResponse:
+    return response.model_copy(
+        update={
+            "target_url": resolve_ontology_url(response.target_code, response.ontology),
+            "alternatives": _with_resolved_alternative_urls(response.alternatives),
+        }
+    )
+
+
+def _with_resolved_batch_row_url(row: BatchRowResult) -> BatchRowResult:
+    return row.model_copy(
+        update={
+            "suggested_url": resolve_ontology_url(row.suggested_code, row.ontology),
+            "alternatives": _with_resolved_alternative_urls(row.alternatives),
+        }
+    )
 
 
 def _plain_payload_value(payload: dict[str, Any], *keys: str) -> Any:
@@ -151,6 +183,8 @@ def _normalize_term_search(record: SessionRecord) -> TermSearchHistoryDetails:
             best_match = SingleMappingResponse.model_validate(snapshot)
         except ValidationError:
             best_match = None
+    if best_match is not None:
+        best_match = _with_resolved_mapping_url(best_match)
 
     input_values = _compact_dict(
         {
@@ -196,7 +230,7 @@ def _normalize_batch_map(record: SessionRecord) -> BatchMapHistoryDetails:
     if snapshot:
         try:
             response = BatchMappingResponse.model_validate(snapshot)
-            rows = response.results
+            rows = [_with_resolved_batch_row_url(row) for row in response.results]
             total = response.total
             completed = response.completed
             batch_status = response.status
@@ -206,7 +240,9 @@ def _normalize_batch_map(record: SessionRecord) -> BatchMapHistoryDetails:
             if isinstance(raw_rows, list):
                 for raw in raw_rows:
                     try:
-                        rows.append(BatchRowResult.model_validate(raw))
+                        rows.append(
+                            _with_resolved_batch_row_url(BatchRowResult.model_validate(raw))
+                        )
                     except ValidationError:
                         logger.debug("Skipping malformed legacy batch row", exc_info=True)
                         continue

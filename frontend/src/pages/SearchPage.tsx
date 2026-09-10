@@ -6,7 +6,7 @@ import { mapSingleTerm } from '../api/mappingApi';
 import OntologyMultiSelect from '../components/OntologyMultiSelect';
 import StrictOntologyToggle from '../components/StrictOntologyToggle';
 import TermSearchResultView from '../components/TermSearchResultView';
-import { ONTOLOGY_OPTIONS } from '../constants/ontologies';
+import { getOntologyDisplayName, ONTOLOGY_OPTIONS } from '../constants/ontologies';
 import { useSession } from '../context/SessionContext';
 import type { AlternativeResult, SingleMappingResponse } from '../types/mapping';
 import { downloadTermMappingCsv } from '../utils/csvExport';
@@ -37,9 +37,18 @@ function isNoResult(response: SingleMappingResponse): boolean {
   );
 }
 
+// The ontology(ies) the user actually asked for. Used only to label the
+// no-match card's headline/metadata — an UNMAPPED result's own `ontology`
+// field is blank, since the mapper didn't select one.
+function formatRequestedOntologyLabel(ontologies: string[] | null): string | undefined {
+  if (!ontologies || ontologies.length === 0) return undefined;
+  return ontologies.map(getOntologyDisplayName).join(' or ');
+}
+
 interface StoredSingleTermResultState {
   bestMatch: SingleMappingResponse;
   altList: AlternativeResult[];
+  requestedOntologyLabel?: string;
 }
 
 function readStoredResultState(): StoredSingleTermResultState | null {
@@ -51,6 +60,7 @@ function readStoredResultState(): StoredSingleTermResultState | null {
     return {
       bestMatch: parsed.bestMatch,
       altList: Array.isArray(parsed.altList) ? parsed.altList : [],
+      requestedOntologyLabel: parsed.requestedOntologyLabel,
     };
   } catch {
     return null;
@@ -106,6 +116,9 @@ export default function SearchPage() {
   const [altList, setAltList] = useState<AlternativeResult[]>(
     () => storedResultState?.altList ?? [],
   );
+  const [requestedOntologyLabel, setRequestedOntologyLabel] = useState<string | undefined>(
+    () => storedResultState?.requestedOntologyLabel,
+  );
 
   // Copy button state
   const [copied, setCopied] = useState(false);
@@ -138,10 +151,12 @@ export default function SearchPage() {
     clearStoredResultState();
     setBestMatch(null);
     setAltList([]);
+    setRequestedOntologyLabel(undefined);
     setLoading(true);
 
     const selectedOntologies = targetOntologiesOrNull(targetOntologies);
     const strictOntology = effectiveStrictTargetOntology(targetOntologies, strictTargetOntology);
+    const ontologyLabel = formatRequestedOntologyLabel(selectedOntologies);
 
     try {
       const sid = await startSession('term_search', {
@@ -180,7 +195,8 @@ export default function SearchPage() {
         const sorted = [...res.alternatives].sort((a, b) => b.confidence - a.confidence);
         setBestMatch(res);
         setAltList(sorted);
-        writeStoredResultState({ bestMatch: res, altList: sorted });
+        setRequestedOntologyLabel(ontologyLabel);
+        writeStoredResultState({ bestMatch: res, altList: sorted, requestedOntologyLabel: ontologyLabel });
         const sid = sessionIdRef.current;
         if (sid) {
           emitEvent(sid, {
@@ -260,23 +276,31 @@ export default function SearchPage() {
       logic_type: alt.source ?? bestMatch.logic_type,
       notes: undefined,
       explanation: alt.explanation,
+      // The backend resolver is the only ontology URL implementation —
+      // carry the alternative's already-computed URL forward rather than
+      // rebuilding it client-side.
+      target_url: alt.url ?? null,
     };
-    // Demote current best match into alternatives
-    const demoted: AlternativeResult = {
-      code: bestMatch.target_code,
-      term: bestMatch.target_term,
-      ontology: bestMatch.ontology,
-      confidence: bestMatch.confidence,
-      source: bestMatch.logic_type,
-      explanation: bestMatch.explanation ?? bestMatch.notes,
-    };
-    const newAlts = [
-      demoted,
-      ...altList.filter((a) => a.code !== alt.code),
-    ].sort((a, b) => b.confidence - a.confidence);
+    // Demote current best match into alternatives — unless it's the UNMAPPED
+    // placeholder, which isn't a real candidate and shouldn't appear as one.
+    const remainingAlts = altList.filter((a) => a.code !== alt.code);
+    const newAlts = isNoResult(bestMatch)
+      ? remainingAlts.sort((a, b) => b.confidence - a.confidence)
+      : [
+          {
+            code: bestMatch.target_code,
+            term: bestMatch.target_term,
+            ontology: bestMatch.ontology,
+            confidence: bestMatch.confidence,
+            source: bestMatch.logic_type,
+            explanation: bestMatch.explanation ?? bestMatch.notes,
+            url: bestMatch.target_url ?? null,
+          },
+          ...remainingAlts,
+        ].sort((a, b) => b.confidence - a.confidence);
     setBestMatch(promoted);
     setAltList(newAlts);
-    writeStoredResultState({ bestMatch: promoted, altList: newAlts });
+    writeStoredResultState({ bestMatch: promoted, altList: newAlts, requestedOntologyLabel });
     setCopied(false);
 
     const sid = sessionIdRef.current;
@@ -477,19 +501,14 @@ export default function SearchPage() {
         </div>
       )}
 
-      {/* ── No result state ─────────────────────────────────────────────── */}
-      {bestMatch && isNoResult(bestMatch) && (
-        <div className="search-alert search-alert--warn">
-          ⚠️ No confident match found. Try adding a human-readable label or description to improve results.
-        </div>
-      )}
-
       {/* ── Results ─────────────────────────────────────────────────────── */}
-      {bestMatch && !isNoResult(bestMatch) && (
+      {bestMatch && (
         <TermSearchResultView
           bestMatch={bestMatch}
           alternatives={altList}
           copied={copied}
+          noMatch={isNoResult(bestMatch)}
+          requestedOntologyLabel={requestedOntologyLabel}
           onCopy={handleCopy}
           onDownloadCsv={() => downloadTermMappingCsv(bestMatch)}
           onPromote={handlePromote}

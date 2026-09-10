@@ -38,6 +38,7 @@ class AlternativeResult(BaseModel):
     confidence: float
     source: str | None = None  # "llm" | "rag" | "direct"
     explanation: str | None = None
+    url: str | None = None  # derived — see app.utils.ontology_urls
 
 
 class MappingMetadata(BaseModel):
@@ -64,6 +65,7 @@ class SingleMappingResponse(BaseModel):
     configured_provider: str | None = None
     configured_model: str | None = None
     retrieval_mode: str | None = None
+    target_url: str | None = None  # derived — see app.utils.ontology_urls
 
 
 class BatchMappingRequest(BaseModel):
@@ -102,6 +104,7 @@ class BatchRowResult(BaseModel):
     configured_provider: str | None = None
     configured_model: str | None = None
     retrieval_mode: str | None = None
+    suggested_url: str | None = None  # derived — see app.utils.ontology_urls
 
 
 class BatchMappingResponse(BaseModel):

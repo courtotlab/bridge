@@ -45,6 +45,22 @@ interface TermSearchResultViewProps {
   copied?: boolean;
   readOnly?: boolean;
   sessionDate?: string;
+  /**
+   * Renders the no-confident-match presentation instead of a best-match
+   * card. `bestMatch` is UNKNOWN:UNMAPPED/UNMAPPED in this case — it isn't a
+   * real ontology mapping, so its code/term/confidence are never shown, and
+   * actions that treat it as a selected mapping (copy/download) are hidden.
+   * Metadata (ontology, retrieval method, provider, model) and the mapper's
+   * own explanation are still shown, and alternatives still render/promote
+   * normally underneath.
+   */
+  noMatch?: boolean;
+  /**
+   * The ontology the user actually requested (e.g. "Human Phenotype
+   * Ontology"), used only in noMatch mode — bestMatch.ontology is blank/
+   * UNKNOWN for an UNMAPPED result, so it can't be used for the headline.
+   */
+  requestedOntologyLabel?: string;
   onCopy?: () => void;
   onDownloadCsv?: () => void;
   onPromote?: (alt: AlternativeResult) => void;
@@ -55,36 +71,65 @@ export default function TermSearchResultView({
   alternatives,
   copied = false,
   readOnly = false,
+  noMatch = false,
+  requestedOntologyLabel,
   onCopy,
   onDownloadCsv,
   onPromote,
 }: TermSearchResultViewProps) {
   const explanation = getMappingExplanation(bestMatch);
+  const ontologyLabel = noMatch ? requestedOntologyLabel : getOntologyDisplayName(bestMatch.ontology);
 
   return (
     <div className="search-results">
-      <div className="card result-card">
+      <div className={`card result-card${noMatch ? ' result-card--no-match' : ''}`}>
         <div className="result-card-header">
-          <span className="result-card-title-label">Best match</span>
-          <ConfidenceBadge confidence={bestMatch.confidence} />
+          <span className="result-card-title-label">
+            {noMatch ? 'No confident match' : 'Best match'}
+          </span>
+          {noMatch ? (
+            <span className="status-badge status-badge--unmapped">UNMAPPED</span>
+          ) : (
+            <ConfidenceBadge confidence={bestMatch.confidence} />
+          )}
         </div>
 
-        <p className="result-code-term">
-          <span>{bestMatch.target_code} · {bestMatch.target_term}</span>
-          <MappingDetailsTooltip
-            code={bestMatch.target_code}
-            details={{
-              notes: bestMatch.notes,
-              explanation: bestMatch.explanation,
-              configuredProvider: bestMatch.configured_provider,
-              configuredModel: bestMatch.configured_model,
-            }}
-          />
-        </p>
+        {noMatch ? (
+          <p className="result-code-term">
+            {ontologyLabel ? `No suitable ${ontologyLabel} mapping was found` : 'No confident mapping was found'}
+          </p>
+        ) : (
+          <p className="result-code-term">
+            {bestMatch.target_url ? (
+              <a
+                href={bestMatch.target_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="result-code-link"
+              >
+                {bestMatch.target_code}
+              </a>
+            ) : (
+              <span>{bestMatch.target_code}</span>
+            )}
+            {' · '}{bestMatch.target_term}
+            <MappingDetailsTooltip
+              code={bestMatch.target_code}
+              details={{
+                notes: bestMatch.notes,
+                explanation: bestMatch.explanation,
+                configuredProvider: bestMatch.configured_provider,
+                configuredModel: bestMatch.configured_model,
+              }}
+            />
+          </p>
+        )}
 
-        <p className="result-meta-line">
-          Ontology: {getOntologyDisplayName(bestMatch.ontology)}
-        </p>
+        {ontologyLabel && (
+          <p className="result-meta-line">
+            Ontology: {ontologyLabel}
+          </p>
+        )}
         <p className="result-meta-line">
           <RetrievalModeWithTooltip mode={bestMatch.retrieval_mode} />
         </p>
@@ -109,18 +154,20 @@ export default function TermSearchResultView({
 
         {explanation && <blockquote className="result-notes">"{explanation}"</blockquote>}
 
-        <div className="result-actions">
-          {onCopy && (
-            <button className="btn-outline" onClick={onCopy}>
-              {copied ? '✅ Copied!' : `📋 Copy code: ${bestMatch.target_code}`}
-            </button>
-          )}
-          {onDownloadCsv && (
-            <button className="btn-outline" onClick={onDownloadCsv}>
-              💾 Download as CSV
-            </button>
-          )}
-        </div>
+        {!noMatch && (
+          <div className="result-actions">
+            {onCopy && (
+              <button className="btn-outline" onClick={onCopy}>
+                {copied ? '✅ Copied!' : `📋 Copy code: ${bestMatch.target_code}`}
+              </button>
+            )}
+            {onDownloadCsv && (
+              <button className="btn-outline" onClick={onDownloadCsv}>
+                💾 Download as CSV
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {alternatives.length > 0 && (
@@ -148,7 +195,18 @@ export default function TermSearchResultView({
                     aria-label={interactive ? `Promote ${alt.code} to best match` : undefined}
                   >
                     <td className="alt-code">
-                      <span>{alt.code}</span>
+                      {alt.url ? (
+                        <a
+                          href={alt.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          {alt.code}
+                        </a>
+                      ) : (
+                        <span>{alt.code}</span>
+                      )}
                       {(alt.explanation || alt.source) && (
                         <MappingDetailsTooltip
                           code={alt.code}

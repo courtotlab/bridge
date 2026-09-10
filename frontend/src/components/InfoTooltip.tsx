@@ -106,7 +106,11 @@ export default function InfoTooltip({ label, tooltip, bubbleClassName }: Props) 
         onMouseLeave={hideTooltip}
         onFocus={showTooltip}
         onBlur={hideTooltip}
-        onClick={() => {
+        onClick={(event) => {
+          // This trigger is sometimes nested inside a row that has its own
+          // click handler (e.g. promoting an alternative) — toggling the
+          // tooltip must not also fire that ancestor behavior.
+          event.stopPropagation();
           updatePosition();
           setPinned((current) => {
             const next = !current;

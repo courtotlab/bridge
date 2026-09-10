@@ -705,6 +705,21 @@ code {
   color: #991b1b;
 }
 
+.result-card--no-match {
+  border-left: 3px solid #fcd34d;
+}
+
+.status-badge--unmapped {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 20px;
+  background: #fffbeb;
+  color: #92400e;
+}
+
 /* ── Result body ────────────────────────────────────────────────────── */
 .result-code-term {
   margin: 0 0 10px;
@@ -899,4 +914,23 @@ code {
   font-size: 12px;
   color: #1d4ed8;
   font-weight: 600;
+}
+
+/* ── Ontology entity links ──────────────────────────────────────────── */
+.result-code-link,
+.alt-code a {
+  color: #1d4ed8;
+  text-decoration: none;
+}
+
+.result-code-link:hover,
+.alt-code a:hover {
+  text-decoration: underline;
+}
+
+.result-code-link:focus-visible,
+.alt-code a:focus-visible {
+  outline: 2px solid #1d4ed8;
+  outline-offset: 2px;
+  border-radius: 2px;
 }

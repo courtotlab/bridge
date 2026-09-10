@@ -83,6 +83,15 @@ async function submitSearch(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: /search/i }));
 }
 
+// The code portion of the best-match "code · term" line is its own element
+// (plain text, or an <a> when target_url is present) sitting next to the
+// term as sibling text nodes — so the combined string is no longer a single
+// element's direct text and must be read from the container instead of
+// matched with screen.getByText().
+function resultCodeTermText(): string | null | undefined {
+  return document.querySelector('.result-code-term')?.textContent;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   window.sessionStorage.clear();
@@ -176,7 +185,7 @@ describe('SearchPage retrieval method display', () => {
         target_ontologies: ['EFO'],
       }),
     ));
-    expect(await screen.findByText('EFO:0004340 · body mass index')).toBeInTheDocument();
+    await waitFor(() => expect(resultCodeTermText()).toBe('EFO:0004340 · body mass index'));
     expect(screen.getByText('Ontology: Experimental Factor Ontology')).toBeInTheDocument();
   });
 
@@ -201,7 +210,7 @@ describe('SearchPage retrieval method display', () => {
     await user.click(screen.getByRole('checkbox', { name: 'EFO' }));
     await submitSearch(user);
 
-    expect(await screen.findByText('MONDO:0004975 · Alzheimer disease')).toBeInTheDocument();
+    await waitFor(() => expect(resultCodeTermText()).toBe('MONDO:0004975 · Alzheimer disease'));
     expect(screen.getByText('Ontology: Monarch Disease Ontology')).toBeInTheDocument();
     expect(screen.getByText('EFO:0000249')).toBeInTheDocument();
 
@@ -337,5 +346,247 @@ describe('SearchPage retrieval method display', () => {
       expect(document.getElementById(tooltipId ?? '')).toHaveAttribute('role', 'tooltip');
       expect(document.getElementById(tooltipId ?? '')).toHaveTextContent(text);
     }
+  });
+});
+
+describe('SearchPage UNMAPPED alternatives', () => {
+  const unmappedAlternatives = [
+    { code: 'HP:0004421', term: 'Elevated systolic blood pressure', ontology: 'HPO', confidence: 0.58, source: 'rag' },
+    { code: 'HP:0500105', term: 'Decreased systolic blood pressure', ontology: 'HPO', confidence: 0.52, source: 'rag' },
+    { code: 'HP:0500106', term: 'Isolated systolic hypertension', ontology: 'HPO', confidence: 0.46, source: 'rag' },
+    { code: 'HP:0030972', term: 'Abnormal systemic blood pressure', ontology: 'HPO', confidence: 0.34, source: 'rag' },
+    { code: 'HP:0032263', term: 'Increased blood pressure', ontology: 'HPO', confidence: 0.30, source: 'rag' },
+  ];
+
+  const MAPPER_EXPLANATION =
+    'No candidate is a sufficiently correct match for the generic measurement systolic blood pressure. ' +
+    'The available systolic blood pressure candidates specify an abnormal direction or a clinical condition, ' +
+    'whereas the source does not indicate elevation, decrease, or hypertension.';
+
+  function unmappedResponse(overrides: Partial<SingleMappingResponse> = {}) {
+    return mappingResponse({
+      target_code: 'UNMAPPED',
+      target_term: 'UNMAPPED',
+      ontology: '',
+      confidence: 0.0,
+      logic_type: 'rag',
+      notes: undefined,
+      alternatives: [],
+      ...overrides,
+    });
+  }
+
+  it('shows a no-confident-match card with the requested ontology, mapper explanation, and Other suggestions', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(
+      unmappedResponse({ notes: MAPPER_EXPLANATION, alternatives: unmappedAlternatives }),
+    );
+    const { user } = setup();
+
+    await user.click(screen.getByRole('checkbox', { name: 'HPO' }));
+    await submitSearch(user);
+
+    // No-confident-match card, not a fake "Best match / UNMAPPED / 0%" card.
+    expect(await screen.findByText('No confident match')).toBeInTheDocument();
+    expect(screen.getByText('UNMAPPED')).toBeInTheDocument();
+    expect(screen.queryByText('Best match')).not.toBeInTheDocument();
+    expect(screen.getByText('No suitable Human Phenotype Ontology mapping was found')).toBeInTheDocument();
+
+    // Requested-ontology metadata, not "Ontology: UNKNOWN".
+    expect(screen.getByText('Ontology: Human Phenotype Ontology')).toBeInTheDocument();
+    expect(screen.queryByText(/ontology: unknown/i)).not.toBeInTheDocument();
+
+    // The mapper's own reasoning, not generic UI copy.
+    expect(screen.getByText(new RegExp(MAPPER_EXPLANATION.slice(0, 40)))).toBeInTheDocument();
+
+    // Alternatives still render and promote normally.
+    expect(screen.getByText('Other suggestions')).toBeInTheDocument();
+    for (const alt of unmappedAlternatives) {
+      expect(screen.getByText(alt.code)).toBeInTheDocument();
+    }
+  });
+
+  it('shows the no-match card without an empty Other suggestions section when there are no alternatives', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(unmappedResponse({ notes: MAPPER_EXPLANATION }));
+    const { user } = setup();
+
+    await submitSearch(user);
+
+    expect(await screen.findByText('No confident match')).toBeInTheDocument();
+    expect(screen.getByText(new RegExp(MAPPER_EXPLANATION.slice(0, 40)))).toBeInTheDocument();
+    expect(screen.queryByText('Other suggestions')).not.toBeInTheDocument();
+  });
+
+  it('renders the no-match card without an empty explanation box when the mapper gives no notes', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(unmappedResponse());
+    const { user, container } = setup();
+
+    await submitSearch(user);
+
+    expect(await screen.findByText('No confident match')).toBeInTheDocument();
+    expect(container.querySelector('.result-notes')).toBeNull();
+  });
+
+  it('hides Copy code / Download as CSV actions for an UNMAPPED result', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(unmappedResponse({ alternatives: unmappedAlternatives }));
+    const { user } = setup();
+
+    await submitSearch(user);
+
+    expect(await screen.findByText('No confident match')).toBeInTheDocument();
+    expect(screen.queryByText(/copy code/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/download as csv/i)).not.toBeInTheDocument();
+  });
+
+  it('still shows the best-match card, its actions, and alternatives for a normal mapped result', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(mappingResponse({
+      alternatives: [
+        { code: 'LOINC:8462-4', term: 'Diastolic blood pressure', ontology: 'LOINC', confidence: 0.4, source: 'rag' },
+      ],
+    }));
+    const { user } = setup();
+
+    await submitSearch(user);
+
+    expect(await screen.findByText('Best match')).toBeInTheDocument();
+    expect(screen.getByText(/copy code/i)).toBeInTheDocument();
+    expect(screen.getByText(/download as csv/i)).toBeInTheDocument();
+    expect(screen.getByText('Other suggestions')).toBeInTheDocument();
+    expect(screen.getByText('LOINC:8462-4')).toBeInTheDocument();
+    expect(screen.queryByText('No confident match')).not.toBeInTheDocument();
+  });
+
+  it('promotes an alternative from an UNMAPPED result into a normal best-match card', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(unmappedResponse({ alternatives: unmappedAlternatives }));
+    const { user } = setup();
+
+    await submitSearch(user);
+    await screen.findByText('No confident match');
+
+    await user.click(screen.getByRole('button', { name: /promote hp:0004421 to best match/i }));
+
+    // The no-match card is gone; a normal mapped best-match card takes its place.
+    expect(screen.queryByText('No confident match')).not.toBeInTheDocument();
+    expect(await screen.findByText('Best match')).toBeInTheDocument();
+    expect(resultCodeTermText()).toBe('HP:0004421 · Elevated systolic blood pressure');
+
+    // Normal actions become available now that a real mapping is selected.
+    expect(screen.getByText(/copy code: hp:0004421/i)).toBeInTheDocument();
+    expect(screen.getByText(/download as csv/i)).toBeInTheDocument();
+
+    // Remaining alternatives are still shown, and the UNMAPPED placeholder
+    // must not appear as a demoted alternative.
+    expect(screen.getByText('Other suggestions')).toBeInTheDocument();
+    expect(screen.getByText('HP:0500105')).toBeInTheDocument();
+    expect(screen.queryByText('UNMAPPED')).not.toBeInTheDocument();
+  });
+});
+
+describe('SearchPage ontology entity links', () => {
+  it('renders the best-match code as an external link when target_url is present', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(
+      mappingResponse({ target_url: 'https://loinc.org/8480-6' }),
+    );
+    const { user } = setup();
+
+    await submitSearch(user);
+
+    const link = await screen.findByRole('link', { name: 'LOINC:8480-6' });
+    expect(link).toHaveAttribute('href', 'https://loinc.org/8480-6');
+  });
+
+  it('renders the best-match code as plain text when target_url is absent', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(mappingResponse({ target_url: undefined }));
+    const { user } = setup();
+
+    await submitSearch(user);
+
+    await waitFor(() => expect(resultCodeTermText()).toBe('LOINC:8480-6 · Systolic blood pressure'));
+    expect(screen.queryByRole('link', { name: 'LOINC:8480-6' })).not.toBeInTheDocument();
+  });
+
+  it('promoting an alternative carries its url onto the new best-match card', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(mappingResponse({
+      target_url: 'https://loinc.org/8480-6',
+      alternatives: [
+        {
+          code: 'LOINC:8462-4',
+          term: 'Diastolic blood pressure',
+          ontology: 'LOINC',
+          confidence: 0.4,
+          source: 'rag',
+          url: 'https://loinc.org/8462-4',
+        },
+      ],
+    }));
+    const { user } = setup();
+
+    await submitSearch(user);
+    await screen.findByText('Best match');
+
+    await user.click(screen.getByRole('link', { name: 'LOINC:8462-4' }).closest('tr')!.querySelector('td:nth-child(2)')!);
+
+    await waitFor(() =>
+      expect(resultCodeTermText()).toBe('LOINC:8462-4 · Diastolic blood pressure'),
+    );
+    const promotedLink = screen.getByRole('link', { name: 'LOINC:8462-4' });
+    expect(promotedLink).toHaveAttribute('href', 'https://loinc.org/8462-4');
+
+    // The demoted former best match keeps its own url as an alternative.
+    expect(screen.getByRole('link', { name: 'LOINC:8480-6' })).toHaveAttribute(
+      'href',
+      'https://loinc.org/8480-6',
+    );
+  });
+
+  it('promoting an alternative without a url leaves the new best-match code as plain text', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(mappingResponse({
+      target_url: 'https://loinc.org/8480-6',
+      alternatives: [
+        {
+          code: 'LOINC:8462-4',
+          term: 'Diastolic blood pressure',
+          ontology: 'LOINC',
+          confidence: 0.4,
+          source: 'rag',
+          url: undefined,
+        },
+      ],
+    }));
+    const { user } = setup();
+
+    await submitSearch(user);
+    await screen.findByText('Best match');
+
+    await user.click(screen.getByText('Diastolic blood pressure'));
+
+    await waitFor(() =>
+      expect(resultCodeTermText()).toBe('LOINC:8462-4 · Diastolic blood pressure'),
+    );
+    expect(screen.queryByRole('link', { name: 'LOINC:8462-4' })).not.toBeInTheDocument();
+  });
+
+  it('clicking an alternative code link opens the external page without promoting it', async () => {
+    mocks.mapSingleTerm.mockResolvedValue(mappingResponse({
+      alternatives: [
+        {
+          code: 'LOINC:8462-4',
+          term: 'Diastolic blood pressure',
+          ontology: 'LOINC',
+          confidence: 0.4,
+          source: 'rag',
+          url: 'https://loinc.org/8462-4',
+        },
+      ],
+    }));
+    const { user } = setup();
+
+    await submitSearch(user);
+    await screen.findByText('Best match');
+
+    await user.click(screen.getByRole('link', { name: 'LOINC:8462-4' }));
+
+    // Best match is unchanged — the alternative link click did not promote it.
+    expect(resultCodeTermText()).toBe('LOINC:8480-6 · Systolic blood pressure');
+    expect(screen.getByRole('link', { name: 'LOINC:8462-4' })).toBeInTheDocument();
   });
 });

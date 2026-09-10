@@ -105,7 +105,7 @@ def test_single_mapping_constructs_planned_mapper_for_public_and_disabled(
     assert kwargs["use_planned_pipeline"] is True
     assert kwargs["retrieval_mode"] == mode
     assert kwargs["rag_top_k"] == 15
-    assert kwargs["max_candidates"] == 10
+    assert kwargs["max_candidates"] == 20
     assert kwargs["max_alternatives"] == 5
     assert kwargs["llm_provider"] is deps.provider
     assert kwargs["planned_pipeline"] is deps.planned_pipeline
@@ -577,6 +577,50 @@ def test_public_retriever_blocks_implicit_loinc_without_validated_credentials(
         retriever._call_route("glucose", "LOINC", 1)
 
 
+def test_planned_limit_kwargs_match_public_smoke_test_budgets():
+    """Bridge's standard candidate budget must match the llm-ontology-mapper
+    public smoke-test configuration: rag_top_k=15, max_candidates=20,
+    max_alternatives=5."""
+    config = AppConfig(provider="ollama", model="llama3.2")
+    kwargs = mapper_service._planned_limit_kwargs(config)
+    assert kwargs == {
+        "rag_top_k": 15,
+        "max_candidates": 20,
+        "max_alternatives": 5,
+    }
+
+
+def test_public_retriever_does_not_truncate_candidates_before_reranker(monkeypatch):
+    """Bridge must not independently slice the retriever's candidate list
+    (e.g. down to 5 or 10) before it reaches the mapper's reranker - the
+    mapper itself is solely responsible for applying max_candidates."""
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    deps = _patch_planned_dependencies(monkeypatch)
+
+    fifteen_candidates = [{"code": f"HP:{i:07d}", "rank": i} for i in range(1, 16)]
+    deps.public_retriever_cls._call_route = lambda self, query, ontology, top_k: (
+        fifteen_candidates
+    )
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result()
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+
+    mapper_service.map_single_term(SingleMappingRequest(source_term="sbp"))
+    retriever = deps.public_retriever_cls.calls[0]["instance"]
+
+    candidates = retriever._call_route("systolic blood pressure", "HPO", 15)
+
+    assert len(candidates) == 15
+    # Positions 11-15 (indices 10-14) must survive - no Bridge-level slice to
+    # 5 or 10 candidates before the reranker sees them.
+    assert candidates[10:15] == fifteen_candidates[10:15]
+
+
 def test_changed_credentials_stop_public_loinc_mapping(monkeypatch):
     config = AppConfig(
         provider="ollama",
@@ -740,7 +784,7 @@ def test_batch_mapping_runs_with_planned_mapper_and_normalizes_unmapped(monkeypa
     assert kwargs["ontologies"] is None
     assert kwargs["use_planned_pipeline"] is True
     assert kwargs["rag_top_k"] == 15
-    assert kwargs["max_candidates"] == 10
+    assert kwargs["max_candidates"] == 20
     assert kwargs["max_alternatives"] == 5
     assert "planned_pipeline" in kwargs
     assert "use_rag" not in kwargs
@@ -1312,3 +1356,254 @@ def test_batch_mapping_passes_strict_target_ontology_to_every_row(monkeypatch):
         call.kwargs["strict_target_ontology"] is True
         for call in mapper_instance.map_term.call_args_list
     )
+
+
+# ── Ontology entity URL enrichment ───────────────────────────────────────────
+
+
+def test_single_mapping_response_includes_target_url(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="LOINC:8480-6",
+        term="Systolic blood pressure",
+        ontology="LOINC",
+    )
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+
+    response = mapper_service.map_single_term(SingleMappingRequest(source_term="sbp"))
+
+    assert response.target_url == "https://loinc.org/8480-6"
+
+
+def test_single_mapping_alternative_has_its_own_url(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="LOINC:76534-7",
+        term="Diastolic blood pressure",
+        ontology="LOINC",
+        alternatives=[
+            SimpleNamespace(
+                code="LOINC:76215-3",
+                term="Systolic blood pressure alt",
+                ontology="LOINC",
+                confidence=0.6,
+                source="rag",
+                explanation=None,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+
+    response = mapper_service.map_single_term(SingleMappingRequest(source_term="dbp"))
+
+    assert response.target_url == "https://loinc.org/76534-7"
+    assert response.alternatives[0].url == "https://loinc.org/76215-3"
+    # Each alternative resolves independently from its own code, not the
+    # primary result's code.
+    assert response.alternatives[0].url != response.target_url
+
+
+def test_single_mapping_url_follows_returned_code_not_requested_ontology(monkeypatch):
+    # Requested ontology is EFO, but the mapper returns an HPO code — the
+    # entity link must point at HPO, never at EFO.
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="HP:0001250",
+        term="Seizure",
+        ontology="HPO",
+    )
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+
+    response = mapper_service.map_single_term(
+        SingleMappingRequest(source_term="seizure", target_ontologies=["EFO"])
+    )
+
+    assert response.target_url is not None
+    assert "ontologies/hp/" in response.target_url
+    assert "ontologies/efo/" not in response.target_url
+
+
+def test_single_mapping_unmapped_has_no_url(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="UNKNOWN:UNMAPPED",
+        term="UNMAPPED",
+        ontology="UNKNOWN",
+        confidence=0.0,
+    )
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+
+    response = mapper_service.map_single_term(SingleMappingRequest(source_term="???"))
+
+    assert response.target_code == "UNMAPPED"
+    assert response.target_url is None
+
+
+def test_single_mapping_url_identical_across_public_and_local_mode(monkeypatch):
+    urls = {}
+    for mode in ("public", "local"):
+        config = AppConfig(
+            provider="ollama",
+            model="llama3.2",
+            retrieval_mode=mode,
+            sapbert_server_url="http://localhost:8765",
+        )
+        _patch_config(monkeypatch, config)
+        _patch_planned_dependencies(monkeypatch)
+        monkeypatch.setattr(
+            "llm_ontology_mapper.LocalSemanticRetriever",
+            MagicMock(return_value=object()),
+        )
+
+        mapper_instance = MagicMock()
+        mapper_instance.map_term.return_value = _result(
+            code="SNOMEDCT:138875005",
+            term="Substance",
+            ontology="SNOMED-CT",
+        )
+        monkeypatch.setattr(
+            "llm_ontology_mapper.OntologyMapper",
+            MagicMock(return_value=mapper_instance),
+        )
+
+        response = mapper_service.map_single_term(SingleMappingRequest(source_term="substance"))
+        urls[mode] = response.target_url
+
+    assert urls["public"] is not None
+    assert urls["public"] == urls["local"]
+
+
+def test_batch_mapping_row_includes_suggested_url(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="LOINC:8480-6",
+        term="Systolic blood pressure",
+        ontology="LOINC",
+        alternatives=[
+            SimpleNamespace(
+                code="LOINC:76534-7",
+                term="Diastolic blood pressure",
+                ontology="LOINC",
+                confidence=0.6,
+                source="rag",
+                explanation=None,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "sbp", "label": "Systolic blood pressure"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area=None,
+        target_ontologies=None,
+        auto_accept_threshold=0.85,
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    row = job["results"][0]
+    assert row.suggested_url == "https://loinc.org/8480-6"
+    assert row.alternatives[0].url == "https://loinc.org/76534-7"
+
+
+def test_batch_mapping_url_follows_returned_code_not_requested_ontology(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="HP:0001250",
+        term="Seizure",
+        ontology="HPO",
+    )
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "seizure", "label": "Seizure"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area=None,
+        target_ontologies=["EFO"],
+        auto_accept_threshold=0.85,
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    row = job["results"][0]
+    assert row.suggested_code == "HP:0001250"
+    assert row.suggested_url is not None
+    assert "ontologies/hp/" in row.suggested_url
+
+
+def test_batch_mapping_unmapped_row_has_no_url(monkeypatch):
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    _patch_config(monkeypatch, config)
+    _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result(
+        code="UNKNOWN:UNMAPPED",
+        term="UNMAPPED",
+        ontology="UNKNOWN",
+        confidence=0.0,
+    )
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "gibberish", "label": "asdkfjh"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area=None,
+        target_ontologies=None,
+        auto_accept_threshold=0.85,
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    row = job["results"][0]
+    assert row.suggested_code == "UNMAPPED"
+    assert row.suggested_url is None

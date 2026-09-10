@@ -17,6 +17,7 @@ export interface AlternativeResult {
   confidence: number;
   source?: string; // "llm" | "rag" | "direct"
   explanation?: string;
+  url?: string | null; // derived ontology entity link — backend-computed
 }
 
 export interface MappingMetadata {
@@ -44,6 +45,7 @@ export interface SingleMappingResponse {
   configured_provider?: string;
   configured_model?: string;
   retrieval_mode?: RetrievalMode | null;
+  target_url?: string | null; // derived ontology entity link — backend-computed
 }
 
 export interface BatchUploadPreview {
@@ -72,6 +74,7 @@ export interface BatchRowResult {
   configured_provider?: string;
   configured_model?: string;
   retrieval_mode?: RetrievalMode | null;
+  suggested_url?: string | null; // derived ontology entity link — backend-computed
 }
 
 export interface BatchJobStatus {

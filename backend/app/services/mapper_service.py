@@ -18,6 +18,7 @@ from app.storage.config_store import (
 )
 from app.storage.session_store import complete_session
 from app.utils.ontology import normalize_target_ontologies
+from app.utils.ontology_urls import resolve_ontology_url
 
 # ── Batch job store ──────────────────────────────────────────────────────────
 _batch_jobs: dict[str, dict] = {}
@@ -31,7 +32,7 @@ _OLLAMA_PROVIDERS = {"ollama", "ollama_cloud"}
 _OLLAMA_CLOUD_BASE = "https://ollama.com"
 _LOCAL_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0"}
 _PLANNED_RAG_TOP_K = 15
-_PLANNED_MAX_CANDIDATES = 10
+_PLANNED_MAX_CANDIDATES = 20
 _PLANNED_MAX_ALTERNATIVES = 5
 _LOINC_CREDENTIALS_REQUIRED_MESSAGE = (
     "LOINC credentials must be validated in Settings before running public LOINC retrieval."
@@ -472,6 +473,7 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
             confidence=a.confidence,
             source=getattr(a, "source", None),
             explanation=getattr(a, "explanation", None),
+            url=resolve_ontology_url(a.code, a.ontology),
         )
         for a in result.alternatives
     ]
@@ -508,6 +510,7 @@ def map_single_term(request: SingleMappingRequest) -> SingleMappingResponse:
         configured_provider=config.provider,
         configured_model=config.model,
         retrieval_mode=config.retrieval_mode,
+        target_url=resolve_ontology_url(target_code, ontology),
     )
 
 
@@ -704,6 +707,7 @@ def start_batch_job(
                         confidence=a.confidence,
                         source=getattr(a, "source", None),
                         explanation=getattr(a, "explanation", None),
+                        url=resolve_ontology_url(a.code, a.ontology),
                     )
                     for a in result.alternatives
                     if _ontology_matches_allow_list(
@@ -734,6 +738,7 @@ def start_batch_job(
                         getattr(result, "notes", None),
                         mapping_warning,
                     ),
+                    suggested_url=resolve_ontology_url(target_code, ontology),
                 )
             except PlannedPipelineError as exc:
                 logger.exception(
@@ -861,6 +866,7 @@ def _row_primary_to_alternative(row) -> AlternativeResult:
         confidence=row.confidence,
         source=row.logic_type,
         explanation=row.notes,
+        url=row.suggested_url,
     )
 
 
@@ -926,6 +932,7 @@ def promote_batch_alternative(
             row.notes = selected.explanation
             row.decision = "pending"
             row.alternatives = next_alternatives
+            row.suggested_url = selected.url
             return row
 
         return None

@@ -1,11 +1,27 @@
 import { isAxiosError } from 'axios';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { getAnthropicModels, getConfig, getOllamaLoaded, getOpenAIModels, saveConfig, testConnection } from '../api/configApi';
+import {
+  discoverOllamaModels,
+  getAnthropicModels,
+  getConfig,
+  getOllamaLoaded,
+  getOpenAIModels,
+  invalidateRetrievalValidation,
+  saveConfig,
+  testConnection,
+} from '../api/configApi';
 import AccordionSection from '../components/AccordionSection';
-import type { AppConfig, ConnectionTestResponse, Provider, RetrievalMode } from '../types/config';
+import type {
+  AppConfig,
+  ComponentTestResult,
+  ConnectionTestResponse,
+  Provider,
+  ReasoningCapability,
+  RetrievalMode,
+} from '../types/config';
 
 const DEFAULT_MODEL: Record<Provider, string> = {
-  ollama: 'llama3.2',
+  ollama: '',
   ollama_cloud: '',       // populated from /api/tags after first test
   openai: '',
   anthropic: '',
@@ -14,22 +30,21 @@ const DEFAULT_MODEL: Record<Provider, string> = {
 // Displayed in the API key field when a key is already loaded in backend memory.
 // Never sent to the backend — config.api_key always holds the real key.
 const MASKED_KEY_SENTINEL = '••••••••';
+const LOINC_ACCOUNT_URL = 'https://loinc.org/join/';
 
 const CLOUD_PROVIDERS: Provider[] = ['openai', 'ollama_cloud', 'anthropic'];
 
 type TestState = 'idle' | 'loading' | 'done';
+type ModelDiscoveryState = 'idle' | 'loading' | 'done' | 'error';
 
 type TestSnapshot = {
-  provider: Provider;
-  api_key: string | null;
-  model: string;
+  aiRevision: number;
+  retrievalRevision: number;
 };
 
 export default function SettingsPage() {
   const [config, setConfig] = useState<AppConfig>({
-    use_ner: true,
     retrieval_mode: 'public',
-    bioportal_api_key: null,
     loinc_username: null,
     loinc_password: null,
     sapbert_server_url: 'http://localhost:8000',
@@ -38,6 +53,7 @@ export default function SettingsPage() {
     model: 'llama3.2',
     base_url: 'http://localhost:11434',
     api_key: null,
+    reasoning_effort: null,
   });
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -50,13 +66,13 @@ export default function SettingsPage() {
 
   const [testState, setTestState] = useState<TestState>('idle');
   const [testResult, setTestResult] = useState<ConnectionTestResponse | null>(null);
+  const [candidateRetrievalResult, setCandidateRetrievalResult] = useState<ComponentTestResult | null>(null);
+  const [aiModelResult, setAiModelResult] = useState<ComponentTestResult | null>(null);
 
-  // Models returned by last successful Ollama Local test (from testConnection response)
-  const [ollamaLocalTestModels, setOllamaLocalTestModels] = useState<string[]>([]);
-  // True when base_url changed after the last successful Ollama Local test
-  const [ollamaBaseUrlDirty, setOllamaBaseUrlDirty] = useState(false);
-  // Model currently selected in the Ollama Local dropdown (set after test + on dropdown change)
-  const [ollamaLocalSelectedModel, setOllamaLocalSelectedModel] = useState<string>('');
+  // Models discovered from the configured Ollama Local server without running inference.
+  const [ollamaLocalModels, setOllamaLocalModels] = useState<string[]>([]);
+  const [ollamaModelDiscoveryState, setOllamaModelDiscoveryState] = useState<ModelDiscoveryState>('idle');
+  const [ollamaModelDiscoveryError, setOllamaModelDiscoveryError] = useState<string | null>(null);
   // Model currently resident in VRAM on the Ollama server (from /api/ps)
   const [ollamaResidentModel, setOllamaResidentModel] = useState<string | null>(null);
 
@@ -72,10 +88,22 @@ export default function SettingsPage() {
   const [anthropicModelsWarning, setAnthropicModelsWarning] = useState<string | null>(null);
   const [anthropicModelsError, setAnthropicModelsError] = useState<string | null>(null);
 
+  // Reasoning capability for the currently-tested OpenAI model (from the
+  // last testConnection response). null until a model has been tested
+  // against the current API key — see the read-only fallback rendering
+  // for a previously saved reasoning_effort before that first test.
+  const [reasoningCapability, setReasoningCapability] = useState<ReasoningCapability | null>(null);
+
   // True when the API key field changed since the last successful connection test
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
+  const [loincPasswordDisplay, setLoincPasswordDisplay] = useState('');
+  const [loincCredentialsDirty, setLoincCredentialsDirty] = useState(false);
 
   const testRequestIdRef = useRef(0);
+  const ollamaDiscoveryRequestIdRef = useRef(0);
+  const ollamaDiscoveryInFlightUrlRef = useRef<string | null>(null);
+  const aiRevisionRef = useRef(0);
+  const retrievalRevisionRef = useRef(0);
   const configRef = useRef(config);
 
   configRef.current = config;
@@ -84,20 +112,77 @@ export default function SettingsPage() {
   useEffect(() => {
     getConfig()
       .then((c) => {
+        configRef.current = c;
         setConfig(c);
         if (c.api_key && (c.provider === 'openai' || c.provider === 'anthropic')) {
           setApiKeyDisplay(MASKED_KEY_SENTINEL);
         }
+        if (c.loinc_password === MASKED_KEY_SENTINEL) {
+          setLoincPasswordDisplay(MASKED_KEY_SENTINEL);
+        } else {
+          setLoincPasswordDisplay(c.loinc_password ?? '');
+        }
         if (c.provider === 'ollama') {
           getOllamaLoaded().then((r) => setOllamaResidentModel(r.resident_model)).catch(() => {});
+          void discoverLocalOllamaModels(c.base_url);
         }
       })
       .catch(() => {});
   }, []);
 
-  function clearValidationResult() {
-    setTestResult(null);
-    setTestState('idle');
+  async function discoverLocalOllamaModels(baseUrl = configRef.current.base_url, options: { force?: boolean } = {}) {
+    const targetBaseUrl = baseUrl.trim();
+    if (!targetBaseUrl) return;
+    if (!options.force && ollamaDiscoveryInFlightUrlRef.current === targetBaseUrl) return;
+
+    const requestId = ++ollamaDiscoveryRequestIdRef.current;
+    ollamaDiscoveryInFlightUrlRef.current = targetBaseUrl;
+    setOllamaModelDiscoveryState('loading');
+    setOllamaModelDiscoveryError(null);
+    try {
+      const result = await discoverOllamaModels(targetBaseUrl);
+      if (requestId !== ollamaDiscoveryRequestIdRef.current || configRef.current.provider !== 'ollama') return;
+      const models = result.models;
+      setOllamaLocalModels(models);
+      setOllamaModelDiscoveryState('done');
+      const currentModel = (configRef.current.model ?? '').trim();
+      if (currentModel && !models.includes(currentModel)) {
+        clearAiModelResult();
+        setConfig((prev) => {
+          const next = { ...prev, model: '' };
+          configRef.current = next;
+          return next;
+        });
+        setDirty(true);
+        setSaveMsg('');
+      }
+    } catch {
+      if (requestId !== ollamaDiscoveryRequestIdRef.current || configRef.current.provider !== 'ollama') return;
+      setOllamaLocalModels([]);
+      setOllamaModelDiscoveryState('error');
+      setOllamaModelDiscoveryError('Could not load models from this Ollama server.');
+    } finally {
+      if (ollamaDiscoveryInFlightUrlRef.current === targetBaseUrl) {
+        ollamaDiscoveryInFlightUrlRef.current = null;
+      }
+    }
+  }
+
+  function dispatchStatusRefresh() {
+    window.dispatchEvent(new Event('bridge:status-refresh'));
+  }
+
+  function clearCandidateRetrievalResult(options: { invalidateBackend?: boolean } = {}) {
+    retrievalRevisionRef.current += 1;
+    if (options.invalidateBackend && candidateRetrievalResult?.valid) {
+      void invalidateRetrievalValidation().finally(dispatchStatusRefresh);
+    }
+    setCandidateRetrievalResult(null);
+  }
+
+  function clearAiModelResult() {
+    aiRevisionRef.current += 1;
+    setAiModelResult(null);
   }
 
   function patch(updates: Partial<AppConfig>) {
@@ -111,10 +196,12 @@ export default function SettingsPage() {
   }
 
   function patchModel(model: string) {
-    setTestResult(null);
-    setTestState('idle');
+    clearAiModelResult();
+    // A different model may support different reasoning values (or none) —
+    // never carry a reasoning selection from one model to another.
+    setReasoningCapability(null);
     setConfig((prev) => {
-      const next = { ...prev, model };
+      const next = { ...prev, model, reasoning_effort: null };
       configRef.current = next;
       return next;
     });
@@ -122,21 +209,51 @@ export default function SettingsPage() {
     setSaveMsg('');
   }
 
-  function buildTestConfig(): AppConfig {
+  function handleReasoningChange(reasoning_effort: string) {
+    // The exact model + reasoning combination has changed — the previous
+    // successful AI Model test no longer proves the new combination works.
+    clearAiModelResult();
+    patch({ reasoning_effort });
+  }
+
+  function normalizedLoincPasswordForSave(): string | null {
+    if (loincPasswordDisplay === MASKED_KEY_SENTINEL) {
+      return MASKED_KEY_SENTINEL;
+    }
+    return loincPasswordDisplay || null;
+  }
+
+  function normalizedLoincPasswordForTest(): string | null {
+    if (loincPasswordDisplay === MASKED_KEY_SENTINEL) {
+      return null;
+    }
+    if (loincCredentialsDirty && loincPasswordDisplay === '') {
+      return '';
+    }
+    return loincPasswordDisplay || null;
+  }
+
+  function buildConfigPayload(mode: 'save' | 'test'): AppConfig {
     const current = configRef.current;
+    const includeLoincCredentials = mode === 'save' || current.retrieval_mode === 'public';
     return {
       ...current,
+      loinc_username: includeLoincCredentials ? current.loinc_username?.trim() || null : null,
+      loinc_password: includeLoincCredentials
+        ? mode === 'save'
+          ? normalizedLoincPasswordForSave()
+          : normalizedLoincPasswordForTest()
+        : null,
       model: (current.model ?? '').trim(),
     };
   }
 
-  function matchesTestSnapshot(snapshot: TestSnapshot): boolean {
-    const current = configRef.current;
-    return (
-      snapshot.provider === current.provider &&
-      snapshot.api_key === current.api_key &&
-      snapshot.model === current.model
-    );
+  function matchesAiSnapshot(snapshot: TestSnapshot): boolean {
+    return snapshot.aiRevision === aiRevisionRef.current;
+  }
+
+  function matchesRetrievalSnapshot(snapshot: TestSnapshot): boolean {
+    return snapshot.retrievalRevision === retrievalRevisionRef.current;
   }
 
   function applyCloudModelsFromTest(
@@ -159,12 +276,29 @@ export default function SettingsPage() {
     }
   }
 
-  function testResultMessage(result: ConnectionTestResponse | null, succeeded: boolean): string {
-    const msg = result?.message;
-    if (typeof msg === 'string' && msg.trim()) return msg;
-    return succeeded
-      ? 'Connection test succeeded.'
-      : 'Connection test failed. Please try again.';
+  /**
+   * Reconcile OpenAI reasoning UI/config state with a fresh testConnection
+   * response. `result.reasoning` is only absent when the backend never
+   * reached capability resolution for this request (no model selected,
+   * invalid API key, network failure) — in that case the previously saved
+   * reasoning_effort is left untouched rather than guessed away.
+   */
+  function applyReasoningCapabilityFromTest(result: ConnectionTestResponse) {
+    const capability = result.reasoning ?? null;
+    setReasoningCapability(capability);
+    if (!capability) return;
+    setConfig((prev) => {
+      const nextReasoning =
+        capability.status === 'supported'
+          ? prev.reasoning_effort && capability.options.includes(prev.reasoning_effort)
+            ? prev.reasoning_effort
+            : capability.default
+          : null;
+      if (nextReasoning === prev.reasoning_effort) return prev;
+      const next = { ...prev, reasoning_effort: nextReasoning };
+      configRef.current = next;
+      return next;
+    });
   }
 
   function isApiKeyValidated(result: ConnectionTestResponse): boolean {
@@ -183,14 +317,6 @@ export default function SettingsPage() {
     return Boolean(result.available_models?.length) && (isApiKeyValidated(result) || isDiscoveryOnly(result));
   }
 
-  function isModelLevelTestFailure(result: ConnectionTestResponse): boolean {
-    return (
-      !result.success &&
-      result.api_key_ok === true &&
-      result.error_type !== 'invalid_api_key'
-    );
-  }
-
   function clearProviderModels() {
     setCloudModels([]);
     setOpenaiModels([]);
@@ -204,10 +330,11 @@ export default function SettingsPage() {
   function markApiKeyDirty() {
     setApiKeyDirty(true);
     clearProviderModels();
-    clearValidationResult();
+    clearAiModelResult();
+    setReasoningCapability(null);
     if (CLOUD_PROVIDERS.includes(configRef.current.provider)) {
       setConfig((prev) => {
-        const next = { ...prev, model: '' };
+        const next = { ...prev, model: '', reasoning_effort: null };
         configRef.current = next;
         return next;
       });
@@ -216,13 +343,22 @@ export default function SettingsPage() {
     }
   }
 
+  function markLoincCredentialsDirty() {
+    setLoincCredentialsDirty(true);
+    clearCandidateRetrievalResult({ invalidateBackend: configRef.current.retrieval_mode === 'public' });
+  }
+
+  function handleRetrievalModeChange(retrieval_mode: RetrievalMode) {
+    clearCandidateRetrievalResult({ invalidateBackend: configRef.current.retrieval_mode === 'public' });
+    patch({ retrieval_mode });
+  }
+
   function handleProviderChange(provider: Provider) {
-    setTestResult(null);
-    setTestState('idle');
+    clearAiModelResult();
     setApiKeyDirty(false);
-    setOllamaLocalTestModels([]);
-    setOllamaBaseUrlDirty(false);
-    setOllamaLocalSelectedModel('');
+    setOllamaLocalModels([]);
+    setOllamaModelDiscoveryState('idle');
+    setOllamaModelDiscoveryError(null);
     setOllamaResidentModel(null);
     setCloudModels([]);
     setOpenaiModels([]);
@@ -232,9 +368,20 @@ export default function SettingsPage() {
     setAnthropicModelsWarning(null);
     setAnthropicModelsError(null);
     setApiKeyDisplay('');
-    patch({ provider, model: DEFAULT_MODEL[provider] });
+    setReasoningCapability(null);
+    const nextConfig = {
+      ...configRef.current,
+      provider,
+      model: DEFAULT_MODEL[provider],
+      reasoning_effort: null,
+    };
+    configRef.current = nextConfig;
+    setConfig(nextConfig);
+    setDirty(true);
+    setSaveMsg('');
     if (provider === 'ollama') {
       getOllamaLoaded().then((r) => setOllamaResidentModel(r.resident_model)).catch(() => {});
+      void discoverLocalOllamaModels(nextConfig.base_url, { force: true });
     }
   }
 
@@ -242,16 +389,18 @@ export default function SettingsPage() {
     setSaving(true);
     setSaveMsg('');
     try {
-      const saved = await saveConfig(buildTestConfig());
+      const saved = await saveConfig(buildConfigPayload('save'));
       configRef.current = saved;
       setConfig(saved);
+      if (saved.loinc_password === MASKED_KEY_SENTINEL) {
+        setLoincPasswordDisplay(MASKED_KEY_SENTINEL);
+      } else {
+        setLoincPasswordDisplay(saved.loinc_password ?? '');
+      }
+      setLoincCredentialsDirty(false);
       setDirty(false);
       setSaveMsg('Settings saved');
-      if (saved.provider === 'ollama') {
-        setOllamaLocalTestModels([]);
-        setOllamaLocalSelectedModel('');
-      }
-      window.dispatchEvent(new Event('bridge:status-refresh'));
+      dispatchStatusRefresh();
     } catch {
       setSaveMsg('Failed to save settings.');
     } finally {
@@ -260,77 +409,86 @@ export default function SettingsPage() {
   }
 
   async function handleTest() {
+    if (testState === 'loading') return;
     const requestId = ++testRequestIdRef.current;
-    const payload = buildTestConfig();
+    const payload = buildConfigPayload('test');
     const snapshot: TestSnapshot = {
-      provider: payload.provider,
-      api_key: payload.api_key,
-      model: payload.model,
+      aiRevision: aiRevisionRef.current,
+      retrievalRevision: retrievalRevisionRef.current,
     };
 
     setTestState('loading');
     setTestResult(null);
+    setCandidateRetrievalResult(null);
+    setAiModelResult(null);
     if (import.meta.env.DEV) {
       console.debug('[handleTest] payload', {
         provider: payload.provider,
         model: payload.model || '(empty)',
         hasApiKey: Boolean(payload.api_key),
+        hasLoincPassword: Boolean(payload.loinc_password),
       });
     }
     try {
       const result = await testConnection(payload);
-      if (requestId !== testRequestIdRef.current || !matchesTestSnapshot(snapshot)) {
+      if (requestId !== testRequestIdRef.current) {
         console.log('[handleTest] stale response ignored');
         return;
       }
 
       setTestResult(result);
 
-      if (hasModelCatalogFromTest(result)) {
+      const retrievalResult = result.candidate_retrieval ?? null;
+      const aiResult = result.ai_model ?? {
+        valid: result.success,
+        status: result.success ? 'valid' : 'error',
+        code: result.error_type ?? (result.success ? 'provider_connection_valid' : 'provider_connection_failed'),
+        message: result.message,
+      } satisfies ComponentTestResult;
+      const aiSnapshotMatches = matchesAiSnapshot(snapshot);
+      const retrievalSnapshotMatches = matchesRetrievalSnapshot(snapshot);
+
+      if (retrievalResult && retrievalSnapshotMatches) {
+        setCandidateRetrievalResult(retrievalResult);
+        if (payload.retrieval_mode === 'public' && retrievalResult.valid) {
+          setLoincCredentialsDirty(false);
+        }
+      }
+
+      if (aiResult && aiSnapshotMatches) {
+        setAiModelResult(aiResult);
+      }
+
+      if (aiSnapshotMatches && hasModelCatalogFromTest(result)) {
         setApiKeyDirty(false);
       }
-      window.dispatchEvent(new Event('bridge:status-refresh'));
+      dispatchStatusRefresh();
 
-      if (payload.provider === 'ollama' && result.success && result.available_models?.length) {
-        setOllamaLocalTestModels(result.available_models);
-        setOllamaBaseUrlDirty(false);
+      if (aiSnapshotMatches && payload.provider === 'ollama' && aiResult.valid) {
         if (result.resident_model != null) {
           setOllamaResidentModel(result.resident_model);
         }
-        const savedModel = configRef.current.model;
-        const resident = result.resident_model ?? null;
-        const preselect = result.available_models.includes(savedModel)
-          ? savedModel
-          : (resident && result.available_models.includes(resident))
-            ? resident
-            : result.available_models[0];
-        setOllamaLocalSelectedModel(preselect);
-        if (preselect !== savedModel) {
-          setConfig((prev) => {
-            const next = { ...prev, model: preselect };
-            configRef.current = next;
-            return next;
-          });
-          setDirty(true);
-        }
       }
 
-      if (CLOUD_PROVIDERS.includes(payload.provider)) {
+      if (aiSnapshotMatches && CLOUD_PROVIDERS.includes(payload.provider)) {
         if (result.available_models?.length) {
           applyCloudModelsFromTest(payload.provider, result);
+        }
+        if (payload.provider === 'openai') {
+          applyReasoningCapabilityFromTest(result);
         }
         return;
       }
 
       // OpenAI / Anthropic fallback when not using unified cloud path (should not run)
-      if (config.provider === 'openai' && result.success) {
+      if (config.provider === 'openai' && aiResult.valid) {
         const resp = await getOpenAIModels();
         if (requestId !== testRequestIdRef.current) return;
         setOpenaiModels(resp.models);
         setOpenaiModelsWarning(resp.warning ?? null);
         setOpenaiModelsError(resp.error ?? null);
       }
-      if (config.provider === 'anthropic' && result.success) {
+      if (config.provider === 'anthropic' && aiResult.valid) {
         const resp = await getAnthropicModels();
         if (requestId !== testRequestIdRef.current) return;
         setAnthropicModels(resp.models);
@@ -343,7 +501,26 @@ export default function SettingsPage() {
           ? 'Could not reach the backend — is the API server running?'
           : 'Test failed. Please check your settings.';
       if (requestId === testRequestIdRef.current) {
-        setTestResult({ success: false, message, api_key_ok: false, provider_ok: false });
+        const errorResult: ComponentTestResult = {
+          valid: false,
+          status: 'error',
+          code: 'backend_unreachable',
+          message,
+        };
+        setTestResult({
+          success: false,
+          message,
+          candidate_retrieval: errorResult,
+          ai_model: errorResult,
+          api_key_ok: false,
+          provider_ok: false,
+        });
+        if (matchesRetrievalSnapshot(snapshot)) {
+          setCandidateRetrievalResult(errorResult);
+        }
+        if (matchesAiSnapshot(snapshot)) {
+          setAiModelResult(errorResult);
+        }
       }
     } finally {
       if (requestId === testRequestIdRef.current) {
@@ -355,32 +532,36 @@ export default function SettingsPage() {
   const threshold = Math.round(config.rag_auto_accept_threshold * 100);
   const lowThreshold = threshold < 85;
 
-  // Derive connection status CSS class and display text
-  const connClass =
-    testState === 'loading'
-      ? 'conn-status-loading'
-      : testResult?.success && testResult?.warning === 'inference_timeout'
-        ? 'conn-status-warn'
-        : testResult?.success
-          ? 'conn-status-ok'
-          : testResult && isDiscoveryOnly(testResult)
-            ? 'conn-status-info'
-            : testResult && isModelLevelTestFailure(testResult)
-              ? 'conn-status-warn'
-              : 'conn-status-err';
+  function componentStatusClass(result: ComponentTestResult): string {
+    if (result.status === 'not_required') return 'conn-status-info';
+    if (result.status === 'valid') return 'conn-status-ok';
+    return 'conn-status-err';
+  }
 
-  const showOllamaLocalModels =
-    config.provider === 'ollama' && ollamaLocalTestModels.length > 0 && !ollamaBaseUrlDirty;
+  function componentStatusIcon(result: ComponentTestResult): string {
+    if (result.status === 'not_required') return 'ℹ️';
+    if (result.status === 'valid') return '✅';
+    return result.status === 'invalid' ? '❌' : '⚠️';
+  }
+
+  function componentRole(result: ComponentTestResult): 'status' | 'alert' {
+    return result.status === 'valid' || result.status === 'not_required' ? 'status' : 'alert';
+  }
+
+  const showOllamaLocalModels = config.provider === 'ollama' && ollamaLocalModels.length > 0;
+  const localOllamaModelReady =
+    config.provider !== 'ollama' || (Boolean(config.model) && ollamaLocalModels.includes(config.model));
 
   const ollamaLocalConnectionMessage = useMemo(() => {
-    if (!testResult?.success || config.provider !== 'ollama') return null;
-    const n = testResult.available_models?.length ?? 0;
+    if (!aiModelResult?.valid || config.provider !== 'ollama') return null;
+    const n = testResult?.available_models?.length ?? 0;
+    if (n === 0) return null;
     const countText = `${n} model${n !== 1 ? 's' : ''} available`;
-    if (ollamaLocalSelectedModel) {
-      return `Connection ${ollamaLocalSelectedModel} OK — ${countText}.`;
+    if (config.model) {
+      return `Connection ${config.model} OK — ${countText}.`;
     }
     return `Connection OK — ${countText}. Select a model below.`;
-  }, [testResult, ollamaLocalSelectedModel, config.provider]);
+  }, [aiModelResult, testResult, config.model, config.provider]);
 
   const showCloudModels =
     config.provider === 'ollama_cloud' &&
@@ -390,34 +571,23 @@ export default function SettingsPage() {
     config.provider === 'openai' && !apiKeyDirty && openaiModels.length > 0 && !openaiModelsError;
   const showAnthropicModels =
     config.provider === 'anthropic' && !apiKeyDirty && anthropicModels.length > 0 && !anthropicModelsError;
+  // Supported/unknown: driven by the latest test result. When no test has
+  // run yet against the current API key (reasoningCapability === null) but
+  // a reasoning value was previously saved, fall back to a read-only view
+  // of that saved value instead of inventing fresh capability info.
+  const showOpenaiReasoning =
+    config.provider === 'openai' &&
+    (reasoningCapability?.status === 'supported' ||
+      reasoningCapability?.status === 'unknown' ||
+      (reasoningCapability === null && Boolean(config.reasoning_effort)));
 
   return (
     <div className="settings-page">
       <h1 className="page-title">Settings — Pipeline Configuration</h1>
       <p className="page-subtitle">Configure Pipeline Settings</p>
 
-      {/* ── Layer 1 ─────────────────────────────────────────── */}
-      <AccordionSection title="Layer 1 — Input: Smart Term Extraction">
-        <div className="field-group">
-          <label className="checkbox-row">
-            <input
-              type="checkbox"
-              checked={config.use_ner}
-              onChange={(e) => patch({ use_ner: e.target.checked })}
-            />
-            <span>Use biomedical term detection</span>
-          </label>
-          <p className="field-helper">
-            <span className="info-icon">ℹ️</span>{' '}
-            Before mapping, the tool identifies the key medical concept in your field name
-            (e.g. extracts &apos;hypertension&apos; from &apos;htn_diag_age&apos;). Improves accuracy for
-            abbreviated names. Requires scispaCy models — disable if not installed.
-          </p>
-        </div>
-      </AccordionSection>
-
       {/* ── Layer 2 ─────────────────────────────────────────── */}
-      <AccordionSection title="Layer 2 — Candidate Retrieval: Finding Ontology Matches">
+      <AccordionSection title="Candidate Retrieval: Finding Ontology Matches">
         <p className="section-question">
           How should the tool find candidate codes before asking the AI?
         </p>
@@ -428,7 +598,7 @@ export default function SettingsPage() {
               {
                 value: 'public' as RetrievalMode,
                 label: 'Public ontology databases',
-                desc: 'no setup — uses EBI OLS4, LOINC, RxNav, NIH Clinical Tables',
+                desc: 'uses EBI OLS4, LOINC, RxNav, NIH Clinical Tables — LOINC requires credentials',
               },
               {
                 value: 'local' as RetrievalMode,
@@ -448,7 +618,7 @@ export default function SettingsPage() {
                 name="retrieval_mode"
                 value={value}
                 checked={config.retrieval_mode === value}
-                onChange={() => patch({ retrieval_mode: value })}
+                onChange={() => handleRetrievalModeChange(value)}
               />
               <span>
                 <strong>{label}</strong>
@@ -460,49 +630,59 @@ export default function SettingsPage() {
         </div>
 
         {config.retrieval_mode === 'public' && (
-          <div className="subsection">
-            <p className="subsection-title">Public databases options</p>
+          <div className="subsection" aria-label="LOINC credentials">
+            <p className="subsection-title">LOINC credentials</p>
+            <p className="field-helper">
+              LOINC requires an account to search its terminology API.
+            </p>
+            <p className="field-helper">
+              <a href={LOINC_ACCOUNT_URL} target="_blank" rel="noopener noreferrer">
+                Create a LOINC account
+              </a>
+            </p>
             <div className="field-group">
-              <label className="field-label">BioPortal API key</label>
+              <label className="field-label" htmlFor="loinc-username">LOINC username</label>
               <input
+                id="loinc-username"
+                type="text"
+                className="form-input"
+                value={config.loinc_username ?? ''}
+                onChange={(e) => {
+                  patch({ loinc_username: e.target.value || null });
+                  markLoincCredentialsDirty();
+                }}
+              />
+            </div>
+            <div className="field-group">
+              <label className="field-label" htmlFor="loinc-password">LOINC password</label>
+              <input
+                id="loinc-password"
                 type="password"
                 className="form-input"
-                placeholder="optional — leave blank to skip"
-                value={config.bioportal_api_key ?? ''}
-                onChange={(e) => patch({ bioportal_api_key: e.target.value || null })}
+                value={loincPasswordDisplay}
+                onFocus={() => {
+                  if (loincPasswordDisplay === MASKED_KEY_SENTINEL) setLoincPasswordDisplay('');
+                }}
+                onBlur={() => {
+                  if (
+                    configRef.current.loinc_password === MASKED_KEY_SENTINEL &&
+                    !loincCredentialsDirty &&
+                    !loincPasswordDisplay
+                  ) {
+                    setLoincPasswordDisplay(MASKED_KEY_SENTINEL);
+                  }
+                }}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setLoincPasswordDisplay(val);
+                  patch({ loinc_password: val || null });
+                  markLoincCredentialsDirty();
+                }}
               />
-              <p className="field-helper">
-                <span className="info-icon">ℹ️</span>{' '}
-                Adds BioPortal as a fallback source. Get a free key at bioportal.bioontology.org
-                → Account → API key.
-              </p>
             </div>
-
-            <div className="field-group">
-              <label className="field-label">
-                LOINC credentials <span className="optional-mark">(optional)</span>
-              </label>
-              <div className="input-row">
-                <input
-                  type="text"
-                  className="form-input"
-                  placeholder="username"
-                  value={config.loinc_username ?? ''}
-                  onChange={(e) => patch({ loinc_username: e.target.value || null })}
-                />
-                <input
-                  type="password"
-                  className="form-input"
-                  placeholder="password"
-                  value={config.loinc_password ?? ''}
-                  onChange={(e) => patch({ loinc_password: e.target.value || null })}
-                />
-              </div>
-              <p className="field-helper">
-                <span className="info-icon">ℹ️</span>{' '}
-                Required only for LOINC-specific searches.
-              </p>
-            </div>
+            <p className="field-helper">
+              Enter your credentials, then use &quot;Test connection&quot; at the bottom of the page.
+            </p>
           </div>
         )}
 
@@ -515,7 +695,10 @@ export default function SettingsPage() {
                 className="form-input"
                 placeholder="http://localhost:8000"
                 value={config.sapbert_server_url}
-                onChange={(e) => patch({ sapbert_server_url: e.target.value })}
+                onChange={(e) => {
+                  patch({ sapbert_server_url: e.target.value });
+                  clearCandidateRetrievalResult();
+                }}
               />
             </div>
           </div>
@@ -551,7 +734,7 @@ export default function SettingsPage() {
       </AccordionSection>
 
       {/* ── Layer 3 ─────────────────────────────────────────── */}
-      <AccordionSection title="Layer 3 — AI Model: Final Code Selection">
+      <AccordionSection title="AI Model: Final Code Selection">
         <p className="section-question">Which AI would you like to use?</p>
 
         <div className="radio-group">
@@ -585,16 +768,22 @@ export default function SettingsPage() {
           <div className="subsection">
             <p className="subsection-title">Ollama Local settings</p>
             <div className="field-group">
-              <label className="field-label">Server URL</label>
+              <label className="field-label" htmlFor="ollama-base-url">Server URL</label>
               <input
+                id="ollama-base-url"
                 type="text"
                 className="form-input"
                 value={config.base_url}
                 onChange={(e) => {
                   patch({ base_url: e.target.value });
-                  setOllamaBaseUrlDirty(true);
-                  setOllamaLocalTestModels([]);
-                  setOllamaLocalSelectedModel('');
+                  clearAiModelResult();
+                  setOllamaLocalModels([]);
+                  setOllamaModelDiscoveryState('idle');
+                  setOllamaModelDiscoveryError(null);
+                  setOllamaResidentModel(null);
+                }}
+                onBlur={() => {
+                  void discoverLocalOllamaModels(configRef.current.base_url, { force: true });
                 }}
               />
               <p className="field-helper">
@@ -603,38 +792,78 @@ export default function SettingsPage() {
               </p>
             </div>
             <div className="field-group">
-              <label className="field-label">Model</label>
+              <label className="field-label" htmlFor="ollama-model">Model</label>
               {showOllamaLocalModels ? (
                 <>
-                  <select
-                    className="form-input form-select"
-                    value={config.model}
-                    onChange={(e) => {
-                      const model = e.target.value;
-                      setConfig((prev) => {
-                        const next = { ...prev, model };
-                        configRef.current = next;
-                        return next;
-                      });
-                      setOllamaLocalSelectedModel(model);
-                      setDirty(true);
-                      setSaveMsg('');
-                    }}
-                  >
-                    {ollamaLocalTestModels.map((m) => (
-                      <option key={m} value={m}>{m}</option>
-                    ))}
-                  </select>
-                  <p className="field-helper">Select a model then save settings</p>
+                  <div className="input-row">
+                    <select
+                      id="ollama-model"
+                      className="form-input form-select"
+                      value={config.model}
+                      onChange={(e) => {
+                        patchModel(e.target.value);
+                      }}
+                    >
+                      <option value="">— select a model —</option>
+                      {ollamaLocalModels.map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      className="btn-outline"
+                      onClick={() => {
+                        void discoverLocalOllamaModels(config.base_url, { force: true });
+                      }}
+                      disabled={ollamaModelDiscoveryState === 'loading'}
+                    >
+                      Refresh models
+                    </button>
+                  </div>
+                  <p className="field-helper">
+                    {ollamaModelDiscoveryState === 'loading'
+                      ? 'Loading available models…'
+                      : 'Models are loaded from the Ollama server above.'}
+                  </p>
                 </>
               ) : (
-                <input
-                  type="text"
-                  className="form-input"
-                  disabled
-                  placeholder={config.model || 'Test connection to load models'}
-                  value=""
-                />
+                <>
+                  <div className="input-row">
+                    <input
+                      id="ollama-model"
+                      type="text"
+                      className="form-input"
+                      disabled
+                      placeholder={
+                        ollamaModelDiscoveryState === 'loading'
+                          ? 'Loading available models…'
+                          : ollamaModelDiscoveryState === 'error'
+                            ? 'Could not load models from this Ollama server.'
+                            : 'Load models from the Ollama server above'
+                      }
+                      value=""
+                    />
+                    <button
+                      type="button"
+                      className="btn-outline"
+                      onClick={() => {
+                        void discoverLocalOllamaModels(config.base_url, { force: true });
+                      }}
+                      disabled={ollamaModelDiscoveryState === 'loading'}
+                    >
+                      Refresh models
+                    </button>
+                  </div>
+                  {ollamaModelDiscoveryError ? (
+                    <p className="field-error">{ollamaModelDiscoveryError}</p>
+                  ) : (
+                    <p className="field-helper">
+                      {ollamaModelDiscoveryState === 'loading'
+                        ? 'Loading available models…'
+                        : 'Models are loaded from the Ollama server above.'}
+                    </p>
+                  )}
+                </>
               )}
               {ollamaResidentModel && (
                 <p className="field-helper">
@@ -642,10 +871,6 @@ export default function SettingsPage() {
                   currently loaded in memory — it makes sense to use this model to avoid a cold-load delay.
                 </p>
               )}
-              <p className="field-helper">
-                <span className="info-icon">ℹ️</span>{' '}
-                Click &quot;Test connection&quot; to discover available models.
-              </p>
             </div>
           </div>
         )}
@@ -721,10 +946,11 @@ export default function SettingsPage() {
               />
             </div>
             <div className="field-group">
-              <label className="field-label">Model</label>
+              <label className="field-label" htmlFor="openai-model">Model</label>
               {openaiModelsError ? (
                 <>
                   <input
+                    id="openai-model"
                     type="text"
                     className="form-input"
                     value={config.model}
@@ -735,6 +961,7 @@ export default function SettingsPage() {
               ) : showOpenaiModels ? (
                 <>
                   <select
+                    id="openai-model"
                     className="form-input form-select"
                     value={config.model}
                     onChange={(e) => patchModel(e.target.value)}
@@ -750,6 +977,7 @@ export default function SettingsPage() {
                 </>
               ) : (
                 <input
+                  id="openai-model"
                   type="text"
                   className="form-input"
                   disabled
@@ -762,6 +990,49 @@ export default function SettingsPage() {
                 Click &quot;Test connection&quot; to discover available models.
               </p>
             </div>
+
+            {showOpenaiReasoning && (
+              <div className="field-group">
+                <label className="field-label" htmlFor="openai-reasoning">Reasoning</label>
+                {reasoningCapability?.status === 'supported' ? (
+                  <>
+                    <select
+                      id="openai-reasoning"
+                      className="form-input form-select"
+                      value={config.reasoning_effort ?? ''}
+                      onChange={(e) => handleReasoningChange(e.target.value)}
+                    >
+                      {reasoningCapability.options.map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                    <p className="field-helper">
+                      <span className="info-icon">ℹ️</span>{' '}
+                      Changing this requires testing the connection again before it&apos;s validated.
+                    </p>
+                  </>
+                ) : reasoningCapability?.status === 'unknown' ? (
+                  <p className="field-helper">
+                    Reasoning options are not available for this model in this app yet.
+                  </p>
+                ) : (
+                  <>
+                    <input
+                      id="openai-reasoning"
+                      type="text"
+                      className="form-input"
+                      value={config.reasoning_effort ?? ''}
+                      disabled
+                    />
+                    <p className="field-helper">
+                      <span className="info-icon">ℹ️</span>{' '}
+                      Showing the last saved reasoning setting. Click &quot;Test connection&quot; to
+                      refresh the supported options for this model.
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
 
@@ -835,8 +1106,8 @@ export default function SettingsPage() {
 
       {/* ── Info banner ──────────────────────────────────────── */}
       <div className="info-banner">
-        💾 Settings are saved to a local file on this computer. API keys are held in memory
-        only and will need to be re-entered when the app restarts.
+        💾 Settings are saved to a local file on this computer. API keys and passwords are held in memory
+        only and must be re-entered when the app restarts.
       </div>
 
       {/* ── Actions ──────────────────────────────────────────── */}
@@ -848,11 +1119,11 @@ export default function SettingsPage() {
         >
           {saving ? 'Saving…' : '💾 Save settings'}
         </button>
-        <button
-          className="btn-outline"
-          onClick={handleTest}
-          disabled={testState === 'loading'}
-        >
+	        <button
+	          className="btn-outline"
+	          onClick={handleTest}
+	          disabled={testState === 'loading' || !localOllamaModelReady}
+	        >
           {testState === 'loading' ? '⏳ Testing…' : '🔌 Test connection'}
         </button>
         {dirty && !saving && <span className="unsaved-dot">● Unsaved changes</span>}
@@ -861,32 +1132,27 @@ export default function SettingsPage() {
 
       {/* ── Connection status ────────────────────────────────── */}
       {testState === 'loading' && (
-        <div className="conn-status conn-status-loading">⏳ Testing connection…</div>
+        <div className="conn-status conn-status-loading" role="status">⏳ Testing connection…</div>
       )}
-      {testState === 'done' && testResult && (
-        <div className={`conn-status ${connClass}`}>
-          {testResult.success && testResult.warning === 'inference_timeout' &&
-            `⚠️ ${testResultMessage(testResult, true)}`}
-          {testResult.success && testResult.warning !== 'inference_timeout' &&
-            `✅ ${config.provider === 'ollama' && ollamaLocalConnectionMessage
-              ? ollamaLocalConnectionMessage
-              : testResultMessage(testResult, true)}`}
-          {!testResult.success && isDiscoveryOnly(testResult) &&
-            `ℹ️ ${testResultMessage(testResult, false)}`}
-          {!testResult.success && isModelLevelTestFailure(testResult) &&
-            `⚠️ ${testResultMessage(testResult, false)}`}
-          {!testResult.success && !isDiscoveryOnly(testResult) && !isModelLevelTestFailure(testResult) &&
-            `❌ ${testResultMessage(testResult, false)}`}
+      {candidateRetrievalResult && (
+        <div
+          className={`conn-status ${componentStatusClass(candidateRetrievalResult)}`}
+          role={componentRole(candidateRetrievalResult)}
+        >
+          {componentStatusIcon(candidateRetrievalResult)} <strong>Candidate Retrieval:</strong>{' '}
+          {candidateRetrievalResult.message}
         </div>
       )}
-      {testState === 'done' && testResult?.sapbert_status === 'ok' && (
-        <div className="conn-status conn-status-ok" style={{ marginTop: '6px' }}>
-          ✅ SapBERT server reachable
-        </div>
-      )}
-      {testState === 'done' && testResult?.sapbert_status === 'unreachable' && (
-        <div className="conn-status conn-status-warn" style={{ marginTop: '6px' }}>
-          ⚠️ SapBERT server not reachable at {config.sapbert_server_url} — candidate retrieval will not work. Switch to Public databases or check your server.
+      {aiModelResult && (
+        <div
+          className={`conn-status ${componentStatusClass(aiModelResult)}`}
+          role={componentRole(aiModelResult)}
+          style={{ marginTop: candidateRetrievalResult ? '6px' : undefined }}
+        >
+          {componentStatusIcon(aiModelResult)} <strong>AI Model:</strong>{' '}
+          {config.provider === 'ollama' && ollamaLocalConnectionMessage
+            ? ollamaLocalConnectionMessage
+            : aiModelResult.message}
         </div>
       )}
     </div>

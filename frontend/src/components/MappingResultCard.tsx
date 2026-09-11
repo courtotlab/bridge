@@ -1,4 +1,6 @@
 import type { SingleMappingResponse } from '../types/mapping';
+import { formatRetrievalMode, RETRIEVAL_MODE_TOOLTIP } from '../utils/retrievalMode';
+import InfoTooltip from './InfoTooltip';
 
 function confidenceBadgeClass(confidence: number): string {
   if (confidence >= 0.8) return 'confidence-high';
@@ -30,6 +32,10 @@ export default function MappingResultCard({ result }: Props) {
       <div className="result-meta">
         <span>Ontology: {result.ontology}</span>
         <span>Source: {result.source_term}</span>
+        <span>
+          Retrieval method: <strong>{formatRetrievalMode(result.retrieval_mode)}</strong>{' '}
+          <InfoTooltip label="About retrieval method" tooltip={RETRIEVAL_MODE_TOOLTIP} />
+        </span>
       </div>
 
       {result.notes && <div className="result-notes">{result.notes}</div>}

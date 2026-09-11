@@ -8,8 +8,11 @@ export interface InputSummary {
   term?: string;
   codes?: string[];
   clinical_area?: string;
-  target_ontology?: string;
+  target_ontology_column?: string | null;
+  target_ontologies?: string[] | null;
+  target_ontology?: string | null;
   auto_accept_threshold?: number;
+  strict_target_ontology?: boolean;
 }
 
 export interface SessionEvent {
@@ -33,7 +36,7 @@ export async function appendEvent(sessionId: string, event: SessionEvent): Promi
 
 export async function completeSession(
   sessionId: string,
-  status: 'complete' | 'error',
+  status: 'complete' | 'error' | 'interrupted',
   result_snapshot?: unknown,
 ): Promise<void> {
   await client.patch(`/history/${sessionId}/complete`, {

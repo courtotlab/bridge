@@ -1,13 +1,13 @@
 import client from './client';
-import type { SessionRecord, SessionSummary } from '../types/session';
+import type { HistoryDetails, SessionSummary } from '../types/session';
 
 export async function getSessions(): Promise<SessionSummary[]> {
   const { data } = await client.get<SessionSummary[]>('/history');
   return data;
 }
 
-export async function getSession(id: string): Promise<SessionRecord> {
-  const { data } = await client.get<SessionRecord>(`/history/${id}`);
+export async function getSession(id: string): Promise<HistoryDetails> {
+  const { data } = await client.get<HistoryDetails>(`/history/${id}`);
   return data;
 }
 
@@ -17,4 +17,8 @@ export async function deleteSession(id: string): Promise<void> {
 
 export function exportUrl(id: string): string {
   return `http://localhost:8000/api/history/${id}/export`;
+}
+
+export function batchCsvExportUrl(id: string): string {
+  return `http://localhost:8000/api/history/${id}/batch-csv`;
 }

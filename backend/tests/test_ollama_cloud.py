@@ -29,7 +29,9 @@ def _mock_response(status_code: int, json_data=None, text: str = ""):
 def test_tags_ok_no_model_does_not_prove_api_key(mock_post, mock_get):
     mock_get.return_value = _mock_response(
         200,
-        json_data={"models": [{"name": "gemini-3-flash-preview"}, {"name": "llama3.2"}]},
+        json_data={
+            "models": [{"name": "gemini-3-flash-preview"}, {"name": "llama3.2"}]
+        },
     )
 
     result = _test_ollama_cloud(
@@ -124,7 +126,9 @@ def test_chat_success(mock_post, mock_get):
         200,
         json_data={"models": [{"name": "llama3.2"}]},
     )
-    mock_post.return_value = _mock_response(200, json_data={"message": {"content": "OK"}})
+    mock_post.return_value = _mock_response(
+        200, json_data={"message": {"content": "OK"}}
+    )
 
     result = _test_ollama_cloud(
         AppConfig(

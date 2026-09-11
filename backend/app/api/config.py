@@ -2,10 +2,22 @@ import time
 
 import requests as _requests
 from fastapi import APIRouter, HTTPException
+from requests.auth import HTTPBasicAuth
 
-from app.models.config import AppConfig, ConfigStatusResponse, ConnectionTestResponse, ModelsListResponse
+from app.models.config import (
+    AppConfig,
+    ComponentTestResult,
+    ConfigStatusResponse,
+    ConnectionTestResponse,
+    ModelsListResponse,
+    OllamaModelsRequest,
+    ReasoningCapabilityResponse,
+)
 from app.storage.config_store import (
+    MASKED_SECRET_SENTINEL,
     cache_api_key,
+    cache_loinc_password,
+    current_public_retrieval_signature,
     get_sensitive,
     invalidate_connection_test,
     invalidate_retrieval_validation,
@@ -27,26 +39,59 @@ from app.utils.cloud_validation import (
 )
 from app.utils.error_translator import translate
 from app.utils.layer_status import compute_layer_status
+from app.utils.openai_reasoning import resolve_reasoning_capability
 
 router = APIRouter()
 
+_LOINC_SEARCH_URL = "https://loinc.regenstrief.org/searchapi/loincs"
+_LOINC_TEST_QUERY = "glucose"
+_LOINC_TIMEOUT_SECONDS = 8
+_OLLAMA_TAGS_TIMEOUT_SECONDS = 5
+_OLLAMA_PS_TIMEOUT_SECONDS = 5
+_OLLAMA_WARM_INFERENCE_TIMEOUT_SECONDS = 30
+_OLLAMA_COLD_INFERENCE_TIMEOUT_SECONDS = 120
+
 
 # ── Config CRUD ───────────────────────────────────────────────────────────────
+
 
 @router.get("", response_model=AppConfig)
 def get_config() -> AppConfig:
     return load_config()
 
 
+def _normalize_reasoning_effort(config: AppConfig) -> AppConfig:
+    """Drop a stale/unverifiable reasoning_effort before it reaches disk.
+
+    Only a value Bridge's capability registry currently confirms as valid
+    for the selected model may be persisted — a value left over from a
+    previously selected model, or a model whose reasoning contract Bridge
+    does not (yet) know, is normalized to None rather than saved as-is.
+    """
+    if config.provider != "openai" or config.reasoning_effort is None:
+        return config
+    capability = resolve_reasoning_capability((config.model or "").strip())
+    if capability.status != "supported" or config.reasoning_effort not in capability.options:
+        return config.model_copy(update={"reasoning_effort": None})
+    return config
+
+
 @router.post("", response_model=AppConfig)
 def post_config(config: AppConfig) -> AppConfig:
-    save_config(config)
+    save_config(_normalize_reasoning_effort(config))
     invalidate_connection_test()
     invalidate_retrieval_validation()
     return load_config()
 
 
+@router.post("/retrieval-validation/invalidate")
+def post_retrieval_validation_invalidate() -> dict[str, bool]:
+    invalidate_retrieval_validation()
+    return {"ok": True}
+
+
 # ── Layer status ──────────────────────────────────────────────────────────────
+
 
 @router.get("/status", response_model=ConfigStatusResponse)
 def get_status() -> ConfigStatusResponse:
@@ -66,12 +111,16 @@ _MODELS_FETCH_WARNING = (
     "Could not fetch live model list — showing defaults. "
     "Check your API key if this is unexpected."
 )
+
+
 @router.get("/openai-models", response_model=ModelsListResponse)
 def get_openai_models() -> ModelsListResponse:
     try:
         import openai as _openai
     except ImportError:
-        return ModelsListResponse(models=_OPENAI_FALLBACK, warning=_MODELS_FETCH_WARNING)
+        return ModelsListResponse(
+            models=_OPENAI_FALLBACK, warning=_MODELS_FETCH_WARNING
+        )
 
     api_key = get_sensitive("api_key")
     if not api_key:
@@ -86,8 +135,10 @@ def get_openai_models() -> ModelsListResponse:
         return ModelsListResponse(models=filter_openai_models(all_models))
     except _openai.AuthenticationError:
         return ModelsListResponse(models=[], error="Invalid OpenAI API key")
-    except Exception:
-        return ModelsListResponse(models=_OPENAI_FALLBACK, warning=_MODELS_FETCH_WARNING)
+    except Exception:  # noqa: BLE001 - live model listing falls back to defaults
+        return ModelsListResponse(
+            models=_OPENAI_FALLBACK, warning=_MODELS_FETCH_WARNING
+        )
 
 
 @router.get("/anthropic-models", response_model=ModelsListResponse)
@@ -95,7 +146,9 @@ def get_anthropic_models() -> ModelsListResponse:
     try:
         import anthropic as _anthropic
     except ImportError:
-        return ModelsListResponse(models=_ANTHROPIC_FALLBACK, warning=_MODELS_FETCH_WARNING)
+        return ModelsListResponse(
+            models=_ANTHROPIC_FALLBACK, warning=_MODELS_FETCH_WARNING
+        )
 
     api_key = get_sensitive("api_key")
     if not api_key:
@@ -111,8 +164,10 @@ def get_anthropic_models() -> ModelsListResponse:
         return ModelsListResponse(models=model_ids)
     except _anthropic.AuthenticationError:
         return ModelsListResponse(models=[], error="Invalid Anthropic API key")
-    except Exception:
-        return ModelsListResponse(models=_ANTHROPIC_FALLBACK, warning=_MODELS_FETCH_WARNING)
+    except Exception:  # noqa: BLE001 - live model listing falls back to defaults
+        return ModelsListResponse(
+            models=_ANTHROPIC_FALLBACK, warning=_MODELS_FETCH_WARNING
+        )
 
 
 @router.get("/ollama-models", response_model=list[str])
@@ -125,7 +180,25 @@ def get_ollama_models() -> list[str]:
         data = resp.json()
         return [m["name"] for m in data.get("models", [])]
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=translate(exc, config.base_url)) from exc
+        raise HTTPException(
+            status_code=503, detail=translate(exc, config.base_url)
+        ) from exc
+
+
+@router.post("/ollama/models", response_model=ModelsListResponse)
+def post_ollama_models(request: OllamaModelsRequest) -> ModelsListResponse:
+    base_url = request.base_url.rstrip("/")
+    tags_url = base_url + "/api/tags"
+    try:
+        resp = _requests.get(tags_url, timeout=_OLLAMA_TAGS_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        data = resp.json()
+        return ModelsListResponse(models=[m["name"] for m in data.get("models", [])])
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Could not load models from this Ollama server.",
+        ) from exc
 
 
 @router.get("/ollama-loaded")
@@ -139,10 +212,13 @@ def get_ollama_loaded() -> dict:
         models = resp.json().get("models", [])
         return {"resident_model": models[0]["name"] if models else None}
     except Exception as exc:
-        raise HTTPException(status_code=503, detail="Could not reach Ollama /api/ps") from exc
+        raise HTTPException(
+            status_code=503, detail="Could not reach Ollama /api/ps"
+        ) from exc
 
 
 # ── Connection test ───────────────────────────────────────────────────────────
+
 
 @router.post("/test", response_model=ConnectionTestResponse)
 def test_connection(body: AppConfig | None = None) -> ConnectionTestResponse:
@@ -151,46 +227,273 @@ def test_connection(body: AppConfig | None = None) -> ConnectionTestResponse:
     config = body if body is not None else load_config()
     print(
         f"[config/test] hit — provider={config.provider!r} model={config.model!r} "
-        f"api_key={'set' if config.api_key else 'not set'}",
+        f"api_key={'set' if config.api_key else 'not set'} "
+        f"loinc_password={'set' if config.loinc_password else 'not set'}",
         flush=True,
     )
     provider = config.provider
 
+    retrieval_result = _test_candidate_retrieval(config)
+
     if provider == "ollama":
-        result = _test_ollama(config)
+        ai_result = _test_ollama(config)
     elif provider == "ollama_cloud":
-        result = _test_ollama_cloud(config)
+        ai_result = _test_ollama_cloud(config)
     elif provider == "openai":
-        result = _test_openai(config)
+        ai_result = _test_openai(config)
     elif provider == "anthropic":
-        result = _test_anthropic(config)
+        ai_result = _test_anthropic(config)
     else:
         raise HTTPException(status_code=422, detail=f"Unknown provider: {provider}")
 
     set_connection_result(
-        result.success,
-        api_key_ok=result.api_key_ok,
-        model_ok=result.model_ok,
+        ai_result.success,
+        api_key_ok=ai_result.api_key_ok,
+        model_ok=ai_result.model_ok,
     )
-    if result.api_key_ok and config.api_key:
+    if ai_result.api_key_ok and config.api_key:
         cache_api_key(config.api_key)
 
-    if result.success:
-        sapbert_status, sapbert_message = _check_sapbert(config)
-        result.sapbert_status = sapbert_status
-        result.sapbert_message = sapbert_message
-        _apply_retrieval_validation(config, sapbert_status)
+    ai_component = _ai_component_from_response(ai_result)
+    aggregate_success = retrieval_result.valid and ai_component.valid
+    message = _aggregate_connection_message(
+        retrieval=retrieval_result,
+        ai=ai_component,
+        aggregate_success=aggregate_success,
+    )
 
-    return result
+    return ai_result.model_copy(
+        update={
+            "success": aggregate_success,
+            "message": message,
+            "candidate_retrieval": retrieval_result,
+            "ai_model": ai_component,
+        }
+    )
 
 
-def _apply_retrieval_validation(config: AppConfig, sapbert_status: str) -> None:
-    """Update Layer 2 state from SapBERT probe; LLM test alone does not validate public retrieval."""
+def _component_result(
+    *,
+    valid: bool,
+    status: str,
+    code: str,
+    message: str,
+) -> ComponentTestResult:
+    return ComponentTestResult(
+        valid=valid,
+        status=status,
+        code=code,
+        message=message,
+    )
+
+
+def _test_candidate_retrieval(config: AppConfig) -> ComponentTestResult:
     if config.retrieval_mode == "disabled":
-        return
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=True,
+            status="not_required",
+            code="retrieval_disabled",
+            message="Candidate retrieval is disabled; no connection test was required.",
+        )
     if config.retrieval_mode == "local":
-        set_retrieval_result(sapbert_status == "ok")
-    # public: no automatic ok — remains untested until a dedicated retrieval check exists
+        sapbert_status, sapbert_message = _check_sapbert(config)
+        passed = sapbert_status == "ok"
+        set_retrieval_result(passed)
+        return _component_result(
+            valid=passed,
+            status="valid" if passed else "error",
+            code="sapbert_reachable" if passed else "sapbert_unreachable",
+            message=sapbert_message or "SapBERT server reachable.",
+        )
+    if config.retrieval_mode == "public":
+        return _test_public_retrieval(config)
+    invalidate_retrieval_validation()
+    return _component_result(
+        valid=False,
+        status="error",
+        code="retrieval_mode_unknown",
+        message="Candidate retrieval mode is not recognized.",
+    )
+
+
+def _resolve_loinc_credentials(config: AppConfig) -> tuple[str | None, str | None]:
+    username = config.loinc_username.strip() if config.loinc_username else None
+    password = config.loinc_password
+    if password is None or password == MASKED_SECRET_SENTINEL:
+        password = get_sensitive("loinc_password")
+    return username, password
+
+
+def _test_public_retrieval(config: AppConfig) -> ComponentTestResult:
+    username, password = _resolve_loinc_credentials(config)
+    if not username or not password:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="invalid",
+            code="loinc_credentials_missing",
+            message="Enter a LOINC username and password before testing the connection.",
+        )
+
+    try:
+        resp = _requests.get(
+            _LOINC_SEARCH_URL,
+            params={"query": _LOINC_TEST_QUERY, "rows": "1", "offset": "0"},
+            auth=HTTPBasicAuth(username, password),
+            timeout=_LOINC_TIMEOUT_SECONDS,
+        )
+    except _requests.Timeout:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_timeout",
+            message="Could not reach the LOINC service. Try again.",
+        )
+    except _requests.ConnectionError:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_unavailable",
+            message="Could not reach the LOINC service. Try again.",
+        )
+    except _requests.RequestException:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_unavailable",
+            message="Could not reach the LOINC service. Try again.",
+        )
+
+    if resp.status_code in (401, 403):
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="invalid",
+            code="loinc_credentials_invalid",
+            message="The LOINC username or password is incorrect.",
+        )
+    if resp.status_code == 429:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_rate_limited",
+            message="The LOINC service is temporarily limiting requests. Try again later.",
+        )
+    if 500 <= resp.status_code < 600:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_unavailable",
+            message="Could not reach the LOINC service. Try again.",
+        )
+    if not 200 <= resp.status_code < 300:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_unexpected_response",
+            message="The LOINC service returned an unexpected response.",
+        )
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_unexpected_response",
+            message="The LOINC service returned an unexpected response.",
+        )
+    if not _loinc_response_has_expected_structure(payload):
+        invalidate_retrieval_validation()
+        return _component_result(
+            valid=False,
+            status="error",
+            code="loinc_unexpected_response",
+            message="The LOINC service returned an unexpected response.",
+        )
+
+    config_for_signature = config.model_copy(
+        update={"loinc_username": username, "loinc_password": password}
+    )
+    cache_loinc_password(password)
+    set_retrieval_result(
+        True,
+        signature=current_public_retrieval_signature(config_for_signature),
+    )
+    return _component_result(
+        valid=True,
+        status="valid",
+        code="loinc_credentials_valid",
+        message="LOINC credentials are valid.",
+    )
+
+
+def _loinc_response_has_expected_structure(payload: object) -> bool:
+    if isinstance(payload, list):
+        return True
+    if not isinstance(payload, dict):
+        return False
+    for key in (
+        "results",
+        "Results",
+        "loincs",
+        "docs",
+        "items",
+        "content",
+        "data",
+    ):
+        if key in payload and isinstance(payload[key], list | dict):
+            return True
+    for key in ("response", "Response"):
+        value = payload.get(key)
+        if isinstance(value, dict) and _loinc_response_has_expected_structure(value):
+            return True
+    return False
+
+
+def _ai_component_from_response(result: ConnectionTestResponse) -> ComponentTestResult:
+    if result.success:
+        return _component_result(
+            valid=True,
+            status="valid",
+            code="provider_connection_valid",
+            message=result.message,
+        )
+    if result.api_key_ok is False:
+        status = "invalid"
+    elif result.error_type in {"network_error", "unknown"}:
+        status = "error"
+    else:
+        status = "invalid"
+    return _component_result(
+        valid=False,
+        status=status,
+        code=result.error_type or "provider_connection_failed",
+        message=result.message,
+    )
+
+
+def _aggregate_connection_message(
+    *,
+    retrieval: ComponentTestResult,
+    ai: ComponentTestResult,
+    aggregate_success: bool,
+) -> str:
+    if aggregate_success:
+        return "Connection test succeeded."
+    if not retrieval.valid and not ai.valid:
+        return f"{retrieval.message} {ai.message}"
+    if not retrieval.valid:
+        return retrieval.message
+    return ai.message
 
 
 def _check_sapbert(config: AppConfig) -> tuple[str, str | None]:
@@ -202,184 +505,23 @@ def _check_sapbert(config: AppConfig) -> tuple[str, str | None]:
             resp = _requests.get(base + path, timeout=5)
             if resp.status_code < 400:
                 return "ok", None
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 - try the next SapBERT URL shape
             pass
     msg = f"Could not reach SapBERT server at {base} — is it running?"
     return "unreachable", msg
 
 
-# Ordered from smallest to largest — first match wins
-KNOWN_MODEL_SIZE_ORDER = [
-    # Sub 1B
-    "tinyllama",
-    "tinydolphin",
-    "qwen2:0.5b",
-    "qwen2.5:0.5b",
-    "smollm:135m",
-    "smollm:360m",
-    "smollm2:135m",
-    "smollm2:360m",
-    "phi3.5:mini",
-    # 1B range
-    "smollm:1.7b",
-    "smollm2:1.7b",
-    "qwen2:1.5b",
-    "qwen2.5:1.5b",
-    "llama3.2:1b",
-    "gemma3:1b",
-    "phi3:mini",
-    # 2B range
-    "gemma:2b",
-    "gemma2:2b",
-    "gemma3:2b",
-    "qwen2:2b",
-    "moondream",
-    # 3B range
-    "llama3.2:3b",
-    "llama3.2:latest",
-    "llama3.2",
-    "phi3:3b",
-    "phi3.5",
-    "phi4-mini",
-    "qwen2.5:3b",
-    "olmoe",
-    "stablelm2",
-    # 4B range
-    "gemma3:4b",
-    "phi3:medium",
-    "qwen3:4b",
-    # 7B range
-    "codellama:latest",
-    "codellama:7b",
-    "codellama",
-    "mistral:latest",
-    "mistral:7b",
-    "mistral",
-    "llama2:7b",
-    "llama2:latest",
-    "llama2",
-    "llama3:8b",
-    "llama3:latest",
-    "llama3",
-    "llama3.1:8b",
-    "llama3.1:latest",
-    "llama3.1",
-    "gemma:7b",
-    "gemma2:9b",
-    "gemma3:9b",
-    "gemma3:12b",
-    "qwen2:7b",
-    "qwen2.5:7b",
-    "qwen3:8b",
-    "qwen3:latest",
-    "qwen3",
-    "deepseek-r1:7b",
-    "deepseek-r1:8b",
-    "deepseek-coder:6.7b",
-    "deepseek-coder:latest",
-    "deepseek-coder",
-    "neural-chat",
-    "starling-lm",
-    "orca-mini",
-    "vicuna",
-    "openchat",
-    "zephyr",
-    "wizard-vicuna-uncensored",
-    "nous-hermes",
-    "solar",
-    "dolphin-mistral",
-    "dolphin-phi",
-    "wizard-math",
-    "medllama2",
-    "meditron",
-    # 13B range
-    "llama2:13b",
-    "codellama:13b",
-    "deepseek-r1:14b",
-    "qwen2.5:14b",
-    "qwen3:14b",
-    "phi4",
-    "mistral-nemo",
-    "mistral-small",
-    # 20B range
-    "gpt-oss:20b",
-    "command-r",
-    "mistral-small3.1:latest",
-    "mistral-small3.1",
-    # 22-27B range
-    "gemma3:27b",
-    "medgemma:27b",
-    "gemma2:27b",
-    "qwen3:30b",
-    "deepseek-r1:32b",
-    "qwen2.5:32b",
-    # 34B+
-    "codellama:34b",
-    "llama2:70b",
-    "llama3.1:70b",
-    "llama3:70b",
-    "llama3:70b-instruct",
-    "qwen2:72b",
-    "qwen2.5:72b",
-    "qwen3:32b",
-    "deepseek-r1:70b",
-    "command-r-plus",
-    "mixtral:8x7b",
-    "mixtral:8x22b",
-    "mixtral",
-    # 100B+
-    "gpt-oss:120b",
-    "llama3.1:405b",
-    "deepseek-r1:671b",
-]
-
-# Models that cannot do chat inference — always exclude
-EMBEDDING_MODELS = [
-    "nomic-embed-text",
-    "mxbai-embed",
-    "all-minilm",
-    "snowflake-arctic-embed",
-    "bge-m3",
-    "bge-large",
-    "nomic-bert",
-    "embed",
-]
-
-
-def pick_test_model(models: list[dict]) -> str:
-    """Pick the smallest chat model from /api/tags model dicts (each has at least 'name' and 'size')."""
-    chat_models = [
-        m for m in models
-        if not any(e in m["name"].lower() for e in EMBEDDING_MODELS)
-    ]
-    if not chat_models:
-        chat_models = list(models)
-
-    def rank_in_known(name: str) -> int:
-        lower = name.lower()
-        for i, known in enumerate(KNOWN_MODEL_SIZE_ORDER):
-            if lower.startswith(known.lower()):
-                return i
-        return len(KNOWN_MODEL_SIZE_ORDER)
-
-    def sort_key(m: dict) -> tuple:
-        # Sort by real byte size first (0 if missing), then by name-list position as tiebreaker
-        size = m.get("size") or 0
-        return (size, rank_in_known(m["name"]))
-
-    return min(chat_models, key=sort_key)["name"]
-
-
 def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
     base_url = config.base_url.rstrip("/")
     tags_url = base_url + "/api/tags"
+    selected_model = config.model
 
     print(f"[config/test] ollama local → {tags_url}", flush=True)
 
     # Step 1 — Server reachability + model discovery
     t0 = time.monotonic()
     try:
-        tags_resp = _requests.get(tags_url, timeout=5)
+        tags_resp = _requests.get(tags_url, timeout=_OLLAMA_TAGS_TIMEOUT_SECONDS)
         tags_resp.raise_for_status()
         data = tags_resp.json()
         available_model_dicts = data.get("models", [])
@@ -390,7 +532,7 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
             f"models_found={len(available)}: {models_preview}",
             flush=True,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - normalize local Ollama failures to test response
         return ConnectionTestResponse(
             success=False,
             message=(
@@ -417,41 +559,63 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
             error_type="model_unavailable",
         )
 
-    # Step 2.5 — Check which model is resident in VRAM (/api/ps)
+    selected_model_available = selected_model in available
+    print(
+        f"[config/test] ollama local selected model → {selected_model!r} "
+        f"available={selected_model_available}",
+        flush=True,
+    )
+    if not selected_model_available:
+        return ConnectionTestResponse(
+            success=False,
+            message=(
+                f"Ollama is running at {base_url}, but the selected model "
+                f"{selected_model!r} is not installed."
+            ),
+            available_models=available,
+            provider_ok=True,
+            api_key_ok=None,
+            model_ok=False,
+            error_type="model_unavailable",
+        )
+
+    # Step 2.5 — Check whether the selected model is resident in VRAM (/api/ps)
     resident_model: str | None = None
+    selected_model_loaded = False
     ps_url = base_url + "/api/ps"
     try:
-        ps_resp = _requests.get(ps_url, timeout=5)
+        ps_resp = _requests.get(ps_url, timeout=_OLLAMA_PS_TIMEOUT_SECONDS)
         if ps_resp.ok:
             ps_models = ps_resp.json().get("models", [])
             if ps_models:
                 resident_model = ps_models[0]["name"]
-    except Exception:
+                selected_model_loaded = any(
+                    m.get("name") == selected_model for m in ps_models
+                )
+    except Exception:  # noqa: BLE001, S110 - /api/ps is best-effort metadata
         pass
     print(
-        f"[config/test] ollama local /api/ps ← loaded={resident_model!r}",
+        f"[config/test] ollama local /api/ps ← "
+        f"selected_model_loaded={selected_model_loaded}",
         flush=True,
     )
 
-    # Step 3 — Inference test: prefer the resident (warm) model, else pick smallest
+    # Step 3 — Inference test the exact selected model.
     n = len(available)
     chat_url = base_url + "/api/chat"
-    if resident_model:
-        test_model = resident_model
-        inference_timeout = 30
-        selection_note = "resident in VRAM — warm start"
-    else:
-        test_model = pick_test_model(available_model_dicts)
-        inference_timeout = 60
-        selection_note = f"selected as fastest available from {n} models"
+    test_model = selected_model
+    inference_timeout = (
+        _OLLAMA_WARM_INFERENCE_TIMEOUT_SECONDS
+        if selected_model_loaded
+        else _OLLAMA_COLD_INFERENCE_TIMEOUT_SECONDS
+    )
     payload = {
         "model": test_model,
         "messages": [{"role": "user", "content": "Reply with only OK"}],
         "stream": False,
     }
     print(
-        f"[config/test] ollama local inference test → model={test_model!r} "
-        f"({selection_note})",
+        f"[config/test] ollama local inference test → model={test_model!r}",
         flush=True,
     )
     try:
@@ -460,24 +624,24 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
         latency_ms = int((time.monotonic() - t0) * 1000)
         print(
             f"[config/test] ollama local inference test ← TIMEOUT — "
-            f"returning partial success (server reachable, {n} models available)",
+            f"selected model {test_model!r} did not respond",
             flush=True,
         )
         return ConnectionTestResponse(
-            success=True,
+            success=False,
             message=(
-                f"Connection OK — {n} model{'s' if n != 1 else ''} available. "
-                "(Inference test timed out — server is reachable but models may be slow to load.)"
+                f"Ollama selected model {test_model!r} did not respond within "
+                f"{inference_timeout} seconds."
             ),
             available_models=available,
             latency_ms=latency_ms,
             provider_ok=True,
             api_key_ok=None,
-            model_ok=None,
-            warning="inference_timeout",
+            model_ok=False,
+            error_type="model_test_failed",
             resident_model=resident_model,
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - normalize local Ollama failures to test response
         return ConnectionTestResponse(
             success=False,
             message=translate(exc, base_url),
@@ -498,7 +662,7 @@ def _test_ollama(config: AppConfig) -> ConnectionTestResponse:
     if not chat_resp.ok:
         try:
             body_msg = chat_resp.json().get("error") or chat_resp.text
-        except Exception:
+        except Exception:  # noqa: BLE001 - fallback to raw response text
             body_msg = chat_resp.text
         return ConnectionTestResponse(
             success=False,
@@ -530,8 +694,9 @@ def _ollama_cloud_base(config: AppConfig) -> str:
     raw = config.base_url.rstrip("/")
     try:
         from urllib.parse import urlparse
+
         host = urlparse(raw).hostname or ""
-    except Exception:
+    except Exception:  # noqa: BLE001 - invalid URLs fall back to local-host behavior
         host = ""
     if not raw or host in _LOCAL_HOSTS:
         return _OLLAMA_CLOUD_BASE
@@ -581,7 +746,7 @@ def _ollama_cloud_fetch_tags(
             model_ok=False,
             error_type="unknown",
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - normalize cloud discovery failures
         return [], ConnectionTestResponse(
             success=False,
             message=translate(exc, base),
@@ -684,7 +849,7 @@ def _test_ollama_cloud(config: AppConfig) -> ConnectionTestResponse:
             available_models=available,
             error_type="model_unavailable",
         )
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - normalize cloud chat failures
         return model_failure_response(
             message=translate(exc, base),
             available_models=available,
@@ -696,7 +861,9 @@ def _test_openai(config: AppConfig) -> ConnectionTestResponse:
     try:
         import openai as _openai
     except ImportError:
-        return ConnectionTestResponse(success=False, message="openai package not installed.")
+        return ConnectionTestResponse(
+            success=False, message="openai package not installed."
+        )
 
     api_key = config.api_key
     model = config.model.strip() if config.model else ""
@@ -727,10 +894,16 @@ def _test_openai(config: AppConfig) -> ConnectionTestResponse:
             flush=True,
         )
     except _openai.AuthenticationError as exc:
-        print(f"[config/test] openai models.list ← error_type=invalid_api_key  {type(exc).__name__}", flush=True)
+        print(
+            f"[config/test] openai models.list ← error_type=invalid_api_key  {type(exc).__name__}",
+            flush=True,
+        )
         return invalid_api_key_response("openai")
-    except Exception as exc:
-        print(f"[config/test] openai models.list ← error  {type(exc).__name__}", flush=True)
+    except Exception as exc:  # noqa: BLE001 - normalize OpenAI discovery failures
+        print(
+            f"[config/test] openai models.list ← error  {type(exc).__name__}",
+            flush=True,
+        )
         return ConnectionTestResponse(
             success=False,
             message=translate(exc, "OpenAI"),
@@ -756,33 +929,96 @@ def _test_openai(config: AppConfig) -> ConnectionTestResponse:
             error_type="model_not_supported",
         )
 
+    # Resolve reasoning capability for the exact selected model before doing
+    # anything else — this must never send a value the registry can't confirm.
+    capability = resolve_reasoning_capability(model)
+    reasoning_response = ReasoningCapabilityResponse(
+        status=capability.status,
+        options=list(capability.options),
+        default=capability.default,
+    )
+    print(
+        f"[config/test] openai reasoning capability  model={model!r} "
+        f"status={capability.status!r} options={list(capability.options)} "
+        f"default={capability.default!r}",
+        flush=True,
+    )
+
+    effective_reasoning: str | None = None
+    if capability.status == "supported":
+        effective_reasoning = (
+            capability.default if config.reasoning_effort is None else config.reasoning_effort
+        )
+        if effective_reasoning not in capability.options:
+            result = model_failure_response(
+                message=(
+                    f"Reasoning effort {effective_reasoning!r} is not supported by {model}. "
+                    f"Supported values: {', '.join(capability.options)}."
+                ),
+                available_models=available,
+                error_type="model_not_supported",
+            )
+            return result.model_copy(update={"reasoning": reasoning_response})
+
     print(f"[config/test] openai phase=model  model={model!r}", flush=True)
     try:
-        response = client.chat.completions.create(
+        from llm_ontology_mapper import LLMProviderFactory
+        from llm_ontology_mapper.providers import ChatMessage
+
+        provider = LLMProviderFactory.from_config(
+            provider="openai",
             model=model,
-            messages=[{"role": "user", "content": "Reply with only OK."}],
-            max_tokens=5,
-            timeout=30.0,
+            api_key=api_key,
+            max_retries=1,
         )
-        text = response.choices[0].message.content or ""
+        complete_kwargs: dict[str, object] = {}
+        if effective_reasoning is not None:
+            # strict=True: never silently drop reasoning_effort after an API
+            # rejection and retry without it — an invalid explicit reasoning
+            # configuration must fail Test Connection, not pass silently.
+            complete_kwargs["reasoning_effort"] = effective_reasoning
+            complete_kwargs["strict"] = True
+        response = provider.complete(
+            [ChatMessage(role="user", content="Reply with only OK.")],
+            temperature=0.1,
+            max_tokens=64,
+            timeout=30.0,
+            **complete_kwargs,
+        )
+        text = response.content or ""
         print(f"[config/test] openai chat ← ok  response={text[:80]!r}", flush=True)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - normalize OpenAI chat failures
         print(f"[config/test] openai chat ← error  {type(exc).__name__}", flush=True)
-        return openai_chat_error_response(exc, available)
+        cause = exc.__cause__ or exc
+        if effective_reasoning is not None and "reasoning_effort" in str(cause).lower():
+            error_result = model_failure_response(
+                message=(
+                    f"OpenAI rejected reasoning effort {effective_reasoning!r} for {model}. "
+                    "Select a different reasoning value and test again."
+                ),
+                available_models=available,
+                error_type="model_not_supported",
+            )
+        else:
+            error_result = openai_chat_error_response(cause, available)
+        return error_result.model_copy(update={"reasoning": reasoning_response})
 
     latency_ms = int((time.monotonic() - t0) * 1000)
-    return model_validated_success(
+    success_result = model_validated_success(
         message="OpenAI API key valid and selected model is usable.",
         available_models=available,
         latency_ms=latency_ms,
     )
+    return success_result.model_copy(update={"reasoning": reasoning_response})
 
 
 def _test_anthropic(config: AppConfig) -> ConnectionTestResponse:
     try:
         import anthropic as _anthropic
     except ImportError:
-        return ConnectionTestResponse(success=False, message="anthropic package not installed.")
+        return ConnectionTestResponse(
+            success=False, message="anthropic package not installed."
+        )
 
     api_key = config.api_key
     model = config.model.strip() if config.model else ""
@@ -813,10 +1049,16 @@ def _test_anthropic(config: AppConfig) -> ConnectionTestResponse:
             flush=True,
         )
     except _anthropic.AuthenticationError as exc:
-        print(f"[config/test] anthropic models.list ← error_type=invalid_api_key  {type(exc).__name__}", flush=True)
+        print(
+            f"[config/test] anthropic models.list ← error_type=invalid_api_key  {type(exc).__name__}",
+            flush=True,
+        )
         return invalid_api_key_response("anthropic")
-    except Exception as exc:
-        print(f"[config/test] anthropic models.list ← error  {type(exc).__name__}", flush=True)
+    except Exception as exc:  # noqa: BLE001 - normalize Anthropic discovery failures
+        print(
+            f"[config/test] anthropic models.list ← error  {type(exc).__name__}",
+            flush=True,
+        )
         return ConnectionTestResponse(
             success=False,
             message=translate(exc, "Anthropic"),
@@ -844,7 +1086,7 @@ def _test_anthropic(config: AppConfig) -> ConnectionTestResponse:
         )
         text = response.content[0].text if response.content else ""
         print(f"[config/test] anthropic chat ← ok  response={text[:80]!r}", flush=True)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - normalize Anthropic chat failures
         print(f"[config/test] anthropic chat ← error  {type(exc).__name__}", flush=True)
         return anthropic_chat_error_response(exc, available)
 

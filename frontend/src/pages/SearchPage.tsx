@@ -3,28 +3,16 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getConfig } from '../api/configApi';
 import { mapSingleTerm } from '../api/mappingApi';
+import OntologyMultiSelect from '../components/OntologyMultiSelect';
+import StrictOntologyToggle from '../components/StrictOntologyToggle';
+import TermSearchResultView from '../components/TermSearchResultView';
+import { getOntologyDisplayName, ONTOLOGY_OPTIONS } from '../constants/ontologies';
 import { useSession } from '../context/SessionContext';
 import type { AlternativeResult, SingleMappingResponse } from '../types/mapping';
+import { downloadTermMappingCsv } from '../utils/csvExport';
+import { effectiveStrictTargetOntology, targetOntologiesOrNull } from '../utils/ontologyPayloads';
 
 // ── Constants ────────────────────────────────────────────────────────────────
-
-const ONTOLOGY_FULL_NAMES: Record<string, string> = {
-  HPO: 'Human Phenotype Ontology',
-  MONDO: 'Monarch Disease Ontology',
-  NCIT: 'NCI Thesaurus',
-  LOINC: 'Logical Observation Identifiers Names and Codes',
-  ICD10: 'International Classification of Diseases, 10th Revision',
-  CHEBI: 'Chemical Entities of Biological Interest',
-  SNOMED: 'SNOMED Clinical Terms',
-  RXNORM: 'RxNorm',
-};
-
-const LOGIC_TYPE_TOOLTIPS: Record<string, string> = {
-  llm: 'AI selected this code from candidates',
-  rag: 'Retrieved directly from ontology database',
-  direct: 'Exact match found',
-  hybrid: 'AI reasoning combined with database retrieval',
-};
 
 const DATA_TYPE_OPTIONS = ['Numeric', 'Text', 'Boolean', 'Date', 'Categorical', 'Other'];
 
@@ -37,37 +25,9 @@ const CLINICAL_AREA_OPTIONS = [
   'Other',
 ];
 
-const ONTOLOGY_OPTIONS = [
-  'Auto-detect',
-  'HPO',
-  'MONDO',
-  'NCIT',
-  'LOINC',
-  'ICD10',
-  'CHEBI',
-  'SNOMED',
-  'RxNorm',
-];
+const SINGLE_TERM_RESULT_STORAGE_KEY = 'bridge:single-term-result';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function getOntologyName(code: string): string {
-  return ONTOLOGY_FULL_NAMES[code.toUpperCase()] ?? code;
-}
-
-type ConfidenceTier = 'high' | 'med' | 'low';
-
-function getConfidenceTier(confidence: number): ConfidenceTier {
-  if (confidence >= 0.8) return 'high';
-  if (confidence >= 0.5) return 'med';
-  return 'low';
-}
-
-function getConfidenceLabel(confidence: number): string {
-  if (confidence >= 0.8) return 'High';
-  if (confidence >= 0.5) return 'Med';
-  return 'Low';
-}
 
 function isNoResult(response: SingleMappingResponse): boolean {
   return (
@@ -77,73 +37,50 @@ function isNoResult(response: SingleMappingResponse): boolean {
   );
 }
 
-function buildCsv(response: SingleMappingResponse): string {
-  const headers = [
-    'source_term',
-    'source_label',
-    'source_type',
-    'target_code',
-    'target_term',
-    'ontology',
-    'confidence',
-    'logic_type',
-    'notes',
-  ];
-  const escape = (v: string | number | undefined | null) => {
-    if (v === null || v === undefined) return '';
-    const s = String(v);
-    return s.includes(',') || s.includes('"') || s.includes('\n')
-      ? `"${s.replace(/"/g, '""')}"`
-      : s;
-  };
-  const row = [
-    response.source_term,
-    response.source_label,
-    response.source_type,
-    response.target_code,
-    response.target_term,
-    response.ontology,
-    response.confidence,
-    response.logic_type,
-    response.notes,
-  ].map(escape);
-  return `${headers.join(',')}\n${row.join(',')}`;
+// The ontology(ies) the user actually asked for. Used only to label the
+// no-match card's headline/metadata — an UNMAPPED result's own `ontology`
+// field is blank, since the mapper didn't select one.
+function formatRequestedOntologyLabel(ontologies: string[] | null): string | undefined {
+  if (!ontologies || ontologies.length === 0) return undefined;
+  return ontologies.map(getOntologyDisplayName).join(' or ');
 }
 
-function downloadCsv(response: SingleMappingResponse): void {
-  const csv = buildCsv(response);
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `${response.source_term}_mapping.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+interface StoredSingleTermResultState {
+  bestMatch: SingleMappingResponse;
+  altList: AlternativeResult[];
+  requestedOntologyLabel?: string;
 }
 
-// ── Sub-components ───────────────────────────────────────────────────────────
-
-function ConfidenceBadge({ confidence }: { confidence: number }) {
-  const tier = getConfidenceTier(confidence);
-  const label = getConfidenceLabel(confidence);
-  const pct = Math.round(confidence * 100);
-  return (
-    <span className={`confidence-badge confidence-badge--${tier}`}>
-      ● {pct}% {label}
-    </span>
-  );
+function readStoredResultState(): StoredSingleTermResultState | null {
+  try {
+    const raw = window.sessionStorage.getItem(SINGLE_TERM_RESULT_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredSingleTermResultState>;
+    if (!parsed.bestMatch) return null;
+    return {
+      bestMatch: parsed.bestMatch,
+      altList: Array.isArray(parsed.altList) ? parsed.altList : [],
+      requestedOntologyLabel: parsed.requestedOntologyLabel,
+    };
+  } catch {
+    return null;
+  }
 }
 
-function LogicTypeWithTooltip({ logicType }: { logicType: string }) {
-  const tooltip = LOGIC_TYPE_TOOLTIPS[logicType.toLowerCase()] ?? logicType;
-  return (
-    <span className="logic-type-wrap">
-      Method: <strong>{logicType}</strong>{' '}
-      <span className="logic-type-tooltip" title={tooltip} aria-label={tooltip}>
-        ℹ️
-      </span>
-    </span>
-  );
+function writeStoredResultState(state: StoredSingleTermResultState): void {
+  try {
+    window.sessionStorage.setItem(SINGLE_TERM_RESULT_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Session persistence is a convenience; mapping results still render in memory.
+  }
+}
+
+function clearStoredResultState(): void {
+  try {
+    window.sessionStorage.removeItem(SINGLE_TERM_RESULT_STORAGE_KEY);
+  } catch {
+    // Ignore unavailable storage.
+  }
 }
 
 // ── Main component ───────────────────────────────────────────────────────────
@@ -163,7 +100,8 @@ export default function SearchPage() {
   const [description, setDescription] = useState('');
   const [dataType, setDataType] = useState('');
   const [clinicalArea, setClinicalArea] = useState('');
-  const [targetOntology, setTargetOntology] = useState('Auto-detect');
+  const [targetOntologies, setTargetOntologies] = useState<string[]>([]);
+  const [strictTargetOntology, setStrictTargetOntology] = useState(false);
   const [termError, setTermError] = useState('');
 
   // Request state
@@ -171,8 +109,16 @@ export default function SearchPage() {
   const [pageError, setPageError] = useState<PageError | null>(null);
 
   // Result state
-  const [bestMatch, setBestMatch] = useState<SingleMappingResponse | null>(null);
-  const [altList, setAltList] = useState<AlternativeResult[]>([]);
+  const [storedResultState] = useState(() => readStoredResultState());
+  const [bestMatch, setBestMatch] = useState<SingleMappingResponse | null>(
+    () => storedResultState?.bestMatch ?? null,
+  );
+  const [altList, setAltList] = useState<AlternativeResult[]>(
+    () => storedResultState?.altList ?? [],
+  );
+  const [requestedOntologyLabel, setRequestedOntologyLabel] = useState<string | undefined>(
+    () => storedResultState?.requestedOntologyLabel,
+  );
 
   // Copy button state
   const [copied, setCopied] = useState(false);
@@ -202,25 +148,34 @@ export default function SearchPage() {
     }
     setTermError('');
     setPageError(null);
+    clearStoredResultState();
     setBestMatch(null);
     setAltList([]);
+    setRequestedOntologyLabel(undefined);
     setLoading(true);
 
-    const onto =
-      targetOntology === 'Auto-detect' ? undefined : targetOntology.toUpperCase();
+    const selectedOntologies = targetOntologiesOrNull(targetOntologies);
+    const strictOntology = effectiveStrictTargetOntology(targetOntologies, strictTargetOntology);
+    const ontologyLabel = formatRequestedOntologyLabel(selectedOntologies);
 
     try {
       const sid = await startSession('term_search', {
         term: sourceTerm.trim(),
         clinical_area: clinicalArea || undefined,
-        target_ontology: onto,
+        target_ontologies: selectedOntologies,
+        strict_target_ontology: strictOntology,
       });
       sessionIdRef.current = sid;
       emitEvent(sid, {
         timestamp: new Date().toISOString(),
         actor: 'user',
         event_type: 'session_started',
-        payload: { term: sourceTerm.trim(), clinical_area: clinicalArea || null, target_ontology: onto ?? null },
+        payload: {
+          term: sourceTerm.trim(),
+          clinical_area: clinicalArea || null,
+          target_ontologies: selectedOntologies,
+          strict_target_ontology: strictOntology,
+        },
       }).catch(console.error);
     } catch {
       sessionIdRef.current = null;
@@ -229,22 +184,32 @@ export default function SearchPage() {
     mapSingleTerm({
       source_term: sourceTerm.trim(),
       source_label: sourceLabel.trim() || undefined,
+      source_description: description.trim() || undefined,
       source_type: dataType || undefined,
       entity_type: clinicalArea || undefined,
-      target_ontologies: onto,
+      target_ontologies: selectedOntologies,
+      strict_target_ontology: strictOntology,
     })
       .then((res) => {
         // Sort alternatives by confidence descending
         const sorted = [...res.alternatives].sort((a, b) => b.confidence - a.confidence);
         setBestMatch(res);
         setAltList(sorted);
+        setRequestedOntologyLabel(ontologyLabel);
+        writeStoredResultState({ bestMatch: res, altList: sorted, requestedOntologyLabel: ontologyLabel });
         const sid = sessionIdRef.current;
         if (sid) {
           emitEvent(sid, {
             timestamp: new Date().toISOString(),
             actor: 'system',
             event_type: 'mapping_complete',
-            payload: { code: res.target_code, term: res.target_term, confidence: res.confidence, logic_type: res.logic_type },
+            payload: {
+              code: res.target_code,
+              term: res.target_term,
+              confidence: res.confidence,
+              logic_type: res.logic_type,
+              retrieval_mode: res.retrieval_mode ?? null,
+            },
           }).catch(console.error);
           completeSession(sid, 'complete', res).catch(console.error);
         }
@@ -299,7 +264,9 @@ export default function SearchPage() {
 
   function handlePromote(alt: AlternativeResult) {
     if (!bestMatch) return;
-    // Build a synthetic response for the promoted alternative
+    // Build a synthetic response for the promoted alternative.
+    // configured_provider/configured_model/retrieval_mode are inherited via spread —
+    // they come from config, not from the individual result, so they stay stable.
     const promoted: SingleMappingResponse = {
       ...bestMatch,
       target_code: alt.code,
@@ -307,23 +274,33 @@ export default function SearchPage() {
       ontology: alt.ontology,
       confidence: alt.confidence,
       logic_type: alt.source ?? bestMatch.logic_type,
-      notes: alt.notes,
+      notes: undefined,
+      explanation: alt.explanation,
+      // The backend resolver is the only ontology URL implementation —
+      // carry the alternative's already-computed URL forward rather than
+      // rebuilding it client-side.
+      target_url: alt.url ?? null,
     };
-    // Demote current best match into alternatives
-    const demoted: AlternativeResult = {
-      code: bestMatch.target_code,
-      term: bestMatch.target_term,
-      ontology: bestMatch.ontology,
-      confidence: bestMatch.confidence,
-      source: bestMatch.logic_type,
-      notes: bestMatch.notes,
-    };
-    const newAlts = [
-      demoted,
-      ...altList.filter((a) => a.code !== alt.code),
-    ].sort((a, b) => b.confidence - a.confidence);
+    // Demote current best match into alternatives — unless it's the UNMAPPED
+    // placeholder, which isn't a real candidate and shouldn't appear as one.
+    const remainingAlts = altList.filter((a) => a.code !== alt.code);
+    const newAlts = isNoResult(bestMatch)
+      ? remainingAlts.sort((a, b) => b.confidence - a.confidence)
+      : [
+          {
+            code: bestMatch.target_code,
+            term: bestMatch.target_term,
+            ontology: bestMatch.ontology,
+            confidence: bestMatch.confidence,
+            source: bestMatch.logic_type,
+            explanation: bestMatch.explanation ?? bestMatch.notes,
+            url: bestMatch.target_url ?? null,
+          },
+          ...remainingAlts,
+        ].sort((a, b) => b.confidence - a.confidence);
     setBestMatch(promoted);
     setAltList(newAlts);
+    writeStoredResultState({ bestMatch: promoted, altList: newAlts, requestedOntologyLabel });
     setCopied(false);
 
     const sid = sessionIdRef.current;
@@ -462,27 +439,23 @@ export default function SearchPage() {
 
           {/* Target ontologies */}
           <div className="field-group">
-            <label className="field-label" htmlFor="target-ontology">
-              Target ontologies{' '}
-              <span className="optional-mark">(optional)</span>
-            </label>
-            <select
-              id="target-ontology"
-              className="form-select"
-              value={targetOntology}
-              onChange={(e) => setTargetOntology(e.target.value)}
+            <OntologyMultiSelect
+              label="Target ontologies"
+              options={ONTOLOGY_OPTIONS}
+              selectedValues={targetOntologies}
+              onChange={setTargetOntologies}
               disabled={formDisabled}
-            >
-              {ONTOLOGY_OPTIONS.map((o) => (
-                <option key={o} value={o}>
-                  {o}
-                </option>
-              ))}
-            </select>
-            <p className="field-helper">
-              Auto-detect chooses HPO, MONDO, NCIT, LOINC based on the clinical area.
-            </p>
+              helperText="Selected ontologies restrict the mapping results. Leave all unselected for automatic selection."
+            />
           </div>
+
+          {targetOntologies.includes('EFO') && (
+            <StrictOntologyToggle
+              checked={strictTargetOntology}
+              onChange={setStrictTargetOntology}
+              disabled={formDisabled}
+            />
+          )}
 
           {/* Submit */}
           <div className="search-form-actions">
@@ -528,113 +501,18 @@ export default function SearchPage() {
         </div>
       )}
 
-      {/* ── No result state ─────────────────────────────────────────────── */}
-      {bestMatch && isNoResult(bestMatch) && (
-        <div className="search-alert search-alert--warn">
-          ⚠️ No confident match found. Try adding a human-readable label or description to improve results.
-        </div>
-      )}
-
       {/* ── Results ─────────────────────────────────────────────────────── */}
-      {bestMatch && !isNoResult(bestMatch) && (
-        <div className="search-results">
-
-          {/* Best match card */}
-          <div className="card result-card">
-            <div className="result-card-header">
-              <span className="result-card-title-label">Best match</span>
-              <ConfidenceBadge confidence={bestMatch.confidence} />
-            </div>
-
-            <p className="result-code-term">
-              {bestMatch.target_code} · {bestMatch.target_term}
-            </p>
-
-            <p className="result-meta-line">
-              Ontology: {getOntologyName(bestMatch.ontology)}
-            </p>
-            <p className="result-meta-line">
-              <LogicTypeWithTooltip logicType={bestMatch.logic_type} />
-            </p>
-            {bestMatch.metadata && (
-              <>
-                <p className="result-meta-line">
-                  AI Provider: <strong>{bestMatch.metadata.provider}</strong>{' '}
-                  <span className="logic-type-tooltip" title="The AI model provider used for this mapping" aria-label="AI provider info">ℹ️</span>
-                </p>
-                <p className="result-meta-line">
-                  Model: <strong>{bestMatch.metadata.model}</strong>{' '}
-                  <span className="logic-type-tooltip" title="The specific model used to generate this mapping" aria-label="Model info">ℹ️</span>
-                </p>
-              </>
-            )}
-
-            {(() => {
-              const raw = bestMatch.notes ?? '';
-              const cleaned = raw
-                .replace(/^Mapped\.\s*/i, '')
-                .replace(/^Mapped$/i, '')
-                .replace(/^RAG:\s*/i, '')
-                .trim();
-              return cleaned ? (
-                <blockquote className="result-notes">"{cleaned}"</blockquote>
-              ) : null;
-            })()}
-
-            <div className="result-actions">
-              <button
-                className="btn-outline"
-                onClick={handleCopy}
-              >
-                {copied ? '✅ Copied!' : `📋 Copy code: ${bestMatch.target_code}`}
-              </button>
-              <button
-                className="btn-outline"
-                onClick={() => downloadCsv(bestMatch)}
-              >
-                💾 Download as CSV
-              </button>
-            </div>
-          </div>
-
-          {/* Alternatives table */}
-          {altList.length > 0 && (
-            <div className="card alternatives-card">
-              <h2 className="alternatives-heading">Other suggestions</h2>
-              <table className="alternatives-table">
-                <thead>
-                  <tr>
-                    <th>Code</th>
-                    <th>Term</th>
-                    <th>Confidence</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {altList.map((alt) => (
-                    <tr
-                      key={alt.code}
-                      className="alternatives-row"
-                      onClick={() => handlePromote(alt)}
-                      tabIndex={0}
-                      onKeyDown={(e) => e.key === 'Enter' && handlePromote(alt)}
-                      role="button"
-                      aria-label={`Promote ${alt.code} to best match`}
-                    >
-                      <td className="alt-code">{alt.code}</td>
-                      <td>{alt.term}</td>
-                      <td>
-                        <ConfidenceBadge confidence={alt.confidence} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <p className="field-helper-sm" style={{ marginTop: 8 }}>
-                Click any row to promote it to the best-match card.
-              </p>
-            </div>
-          )}
-        </div>
+      {bestMatch && (
+        <TermSearchResultView
+          bestMatch={bestMatch}
+          alternatives={altList}
+          copied={copied}
+          noMatch={isNoResult(bestMatch)}
+          requestedOntologyLabel={requestedOntologyLabel}
+          onCopy={handleCopy}
+          onDownloadCsv={() => downloadTermMappingCsv(bestMatch)}
+          onPromote={handlePromote}
+        />
       )}
     </div>
   );

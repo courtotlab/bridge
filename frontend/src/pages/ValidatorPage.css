@@ -1,9 +1,7 @@
 /* ── Page shell ─────────────────────────────────────────────────────── */
 .validator-page {
-  max-width: 860px;
   width: 100%;
-  margin: 0 auto;
-  padding: 2rem 2rem;
+  padding: 4rem;
 }
 
 /* ── Textarea ───────────────────────────────────────────────────────── */
@@ -150,6 +148,11 @@
 .val-badge--deprecated {
   background: #fef9c3;
   color: #713f12;
+}
+
+.val-badge--error {
+  background: #fee2e2;
+  color: #991b1b;
 }
 
 /* ── Footer actions ─────────────────────────────────────────────────── */

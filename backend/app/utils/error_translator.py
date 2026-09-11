@@ -20,7 +20,11 @@ def translate(exc: Exception, context: str = "") -> str:
     if "403" in msg or "forbidden" in msg:
         return "Access denied — your API key may not have the required permissions."
 
-    if "name or service not known" in msg or "nodename nor servname" in msg or "getaddrinfo" in msg:
+    if (
+        "name or service not known" in msg
+        or "nodename nor servname" in msg
+        or "getaddrinfo" in msg
+    ):
         return f"Could not resolve host{' ' + context if context else ''} — check your internet connection and server URL."
 
     if "sslerror" in msg or "ssl" in msg:

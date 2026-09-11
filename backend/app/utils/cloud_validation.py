@@ -188,7 +188,9 @@ def _safe_error_detail(exc: Exception) -> str:
     return str(exc).replace("\n", " ")[:200]
 
 
-def openai_chat_error_response(exc: Exception, available: list[str]) -> ConnectionTestResponse:
+def openai_chat_error_response(
+    exc: Exception, available: list[str]
+) -> ConnectionTestResponse:
     import openai as _openai
 
     print(
@@ -214,7 +216,13 @@ def openai_chat_error_response(exc: Exception, available: list[str]) -> Connecti
     if isinstance(exc, _openai.BadRequestError):
         msg = str(exc).lower()
         if "model" in msg and any(
-            token in msg for token in ("not found", "not supported", "does not exist", "invalid model")
+            token in msg
+            for token in (
+                "not found",
+                "not supported",
+                "does not exist",
+                "invalid model",
+            )
         ):
             return model_failure_response(
                 message=(
@@ -269,7 +277,9 @@ def is_anthropic_model_access_error(exc: Exception) -> bool:
     return "model" in msg and "not found" in msg
 
 
-def anthropic_chat_error_response(exc: Exception, available: list[str]) -> ConnectionTestResponse:
+def anthropic_chat_error_response(
+    exc: Exception, available: list[str]
+) -> ConnectionTestResponse:
     import anthropic as _anthropic
 
     status = _anthropic_status_code(exc)
@@ -299,7 +309,13 @@ def anthropic_chat_error_response(exc: Exception, available: list[str]) -> Conne
         msg = str(exc).lower()
         if "model" in msg and any(
             token in msg
-            for token in ("not found", "not supported", "does not exist", "invalid model", "unknown model")
+            for token in (
+                "not found",
+                "not supported",
+                "does not exist",
+                "invalid model",
+                "unknown model",
+            )
         ):
             return model_failure_response(
                 message=(

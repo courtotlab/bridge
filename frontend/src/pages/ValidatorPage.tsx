@@ -1,8 +1,10 @@
 import { useState } from 'react';
 
 import { validateCodes } from '../api/validatorApi';
+import ValidationResultsTable from '../components/ValidationResultsTable';
 import { useSession } from '../context/SessionContext';
 import type { ValidateCodeResult } from '../types/validator';
+import { downloadValidationCsv } from '../utils/csvExport';
 import './ValidatorPage.css';
 
 function parseCodes(raw: string): string[] {
@@ -16,26 +18,6 @@ function parseCodes(raw: string): string[] {
     }
   }
   return out;
-}
-
-function downloadCsv(rows: ValidateCodeResult[]): void {
-  const header = ['Code', 'Status', 'Term', 'Ontology'];
-  const body = rows.map(r => [r.code, r.status, r.term ?? '', r.ontology ?? '']);
-  const csv = [header, ...body]
-    .map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(','))
-    .join('\n');
-  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'validator-results.csv';
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function StatusBadge({ status }: { status: ValidateCodeResult['status'] }) {
-  if (status === 'valid')      return <span className="val-badge val-badge--valid">✓ Valid</span>;
-  if (status === 'deprecated') return <span className="val-badge val-badge--deprecated">⚠ Deprecated</span>;
-  return <span className="val-badge val-badge--notfound">✗ Not found</span>;
 }
 
 export default function ValidatorPage() {
@@ -169,31 +151,10 @@ export default function ValidatorPage() {
             <p className="val-empty">No codes to display.</p>
           ) : (
             <>
-              <div className="val-table-wrap">
-                <table className="val-table">
-                  <thead>
-                    <tr>
-                      <th>Code</th>
-                      <th>Status</th>
-                      <th>Term</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {results.map(r => (
-                      <tr key={r.code}>
-                        <td className="val-code">{r.code}</td>
-                        <td><StatusBadge status={r.status} /></td>
-                        <td className="val-term">
-                          {r.term ?? <span className="val-dash">—</span>}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
+              <ValidationResultsTable rows={results} />
 
               <div className="val-footer">
-                <button className="btn-outline" onClick={() => downloadCsv(results)}>
+                <button className="btn-outline" onClick={() => downloadValidationCsv(results)}>
                   ⬇ Download results
                 </button>
               </div>

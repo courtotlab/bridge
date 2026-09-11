@@ -1,11 +1,11 @@
 import asyncio
 import logging
+import os
 import re
 
 import httpx
 
 from app.models.validator import ValidateResult
-from app.storage.config_store import load_config
 
 logger = logging.getLogger(__name__)
 
@@ -138,9 +138,8 @@ async def _lookup_loinc(
 
 
 async def validate_codes(codes: list[str]) -> list[ValidateResult]:
-    cfg = load_config()
-    loinc_user = cfg.loinc_username
-    loinc_pass = cfg.loinc_password
+    loinc_user = os.environ.get("LOINC_USERNAME")
+    loinc_pass = os.environ.get("LOINC_PASSWORD")
 
     sem = asyncio.Semaphore(10)
 
@@ -151,7 +150,9 @@ async def validate_codes(codes: list[str]) -> list[ValidateResult]:
             if kind == "loinc":
                 if loinc_user and loinc_pass:
                     tasks.append(
-                        _lookup_loinc(raw, normalised, sem, http, loinc_user, loinc_pass)
+                        _lookup_loinc(
+                            raw, normalised, sem, http, loinc_user, loinc_pass
+                        )
                     )
                 else:
                     tasks.append(_lookup_unknown(raw))

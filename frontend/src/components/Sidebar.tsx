@@ -1,7 +1,8 @@
-import { useEffect, useState } from 'react';
-import { NavLink } from 'react-router-dom';
+import { useEffect, useRef, useState } from 'react';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { getStatus } from '../api/configApi';
 import type { LayerStatus } from '../types/config';
+import { interruptActiveBatch } from '../utils/activeBatchInterruption';
 
 const NAV_LINKS = [
   { label: 'Term Search', to: '/search' },
@@ -26,7 +27,6 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 const LAYER_STATUS_LABEL: Record<keyof LayerStatus, Partial<Record<string, string>>> = {
-  layer1: {},
   layer2: { warning: 'Retrieval not checked' },
   layer3: {},
 };
@@ -41,6 +41,9 @@ function layerStatusLabel(key: keyof LayerStatus, state: string): string {
 
 export default function Sidebar() {
   const [layerStatus, setLayerStatus] = useState<LayerStatus | null>(null);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const navigationSeqRef = useRef(0);
 
   function fetchStatus() {
     getStatus()
@@ -70,20 +73,31 @@ export default function Sidebar() {
           <li key={to}>
             <NavLink
               to={to}
+              onClick={async (event) => {
+                event.preventDefault();
+                if (location.pathname === to) return;
+
+                const seq = navigationSeqRef.current + 1;
+                navigationSeqRef.current = seq;
+                await interruptActiveBatch({ reason: 'navigation' });
+                if (navigationSeqRef.current === seq) {
+                  navigate(to);
+                }
+              }}
               className={({ isActive }) => `sidebar-link ${isActive ? 'sidebar-link-active' : ''}`}
+              aria-disabled={location.pathname === to}
             >
               {label}
             </NavLink>
             {to === '/settings' && (
               <div className="sidebar-status-panel">
                 <p className="sidebar-status-title">Pipeline</p>
-                {(
-                  [
-                    { label: 'Layer 1 — NER', key: 'layer1' as const },
-                    { label: 'Layer 2 — Retrieval', key: 'layer2' as const },
-                    { label: 'Layer 3 — LLM', key: 'layer3' as const },
-                  ] as const
-                ).map(({ label: rowLabel, key }) => {
+	                {(
+	                  [
+	                    { label: 'Candidate Retrieval', key: 'layer2' as const },
+	                    { label: 'AI Model', key: 'layer3' as const },
+	                  ] as const
+	                ).map(({ label: rowLabel, key }) => {
                   const state = layerStatus?.[key] ?? 'warning';
                   return (
                     <div key={key} className="sidebar-status-row">

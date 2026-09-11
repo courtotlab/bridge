@@ -109,7 +109,7 @@ For single mapping:
 4. Bridge normalizes frontend clinical-area values such as
    `phenotype_symptom` to mapper entity types such as `phenotype`.
 5. Bridge constructs `OntologyMapper` with the selected retrieval mode, target
-   ontology allow-list, `rag_top_k=15`, `max_candidates=10`, and
+   ontology allow-list, `rag_top_k=15`, `max_candidates=20`, and
    `max_alternatives=5`.
 6. The mapper planned pipeline performs query planning, routing, retrieval,
    candidate normalization, candidate merging, LLM reranking, and result
@@ -172,6 +172,19 @@ Supported providers:
 - **OpenAI** (`openai`): requires an API key. Test connection lists models,
   filters to chat/text-capable models, and, after a model is selected, validates
   it through the mapper library provider.
+
+  When the provider is OpenAI, Settings also exposes a **Reasoning effort**
+  control. Its availability and allowed values depend on a per-model
+  capability table Bridge maintains in
+  `backend/app/utils/openai_reasoning.py`, since neither the OpenAI API nor
+  the `openai` SDK expose this metadata; unrecognized models resolve to "not
+  currently supported" rather than a guessed value. Test connection validates
+  the configured reasoning effort strictly against the selected model and
+  fails with a clear error rather than silently ignoring an unsupported
+  choice. The setting is not cosmetic: whenever the provider is OpenAI and a
+  reasoning effort is configured, it is forwarded into the planned pipeline
+  for real single-term and batch mapping calls, not just the Test connection
+  check.
 - **Anthropic** (`anthropic`): requires an API key. Test connection lists models
   and, after a model is selected, sends a short message to validate the model.
 
@@ -185,6 +198,11 @@ settings, including LOINC username, are saved in
 `bioportal_api_key` exists in the config model but is not currently used by the
 mapping integration.
 
+The Settings page also persists an `rag_auto_accept_threshold` value, but the
+mapping backend does not currently read or apply it. Batch Map's own
+**Auto-accept above** control (see below) is a separate, page-local threshold
+and is not wired to this Settings-page value.
+
 ## User Workflows
 
 ### Term Search
@@ -197,6 +215,9 @@ The **Term Search** page sends a single mapping request with:
 - **Data type** (optional)
 - **Clinical area** (optional)
 - **Target ontologies** (optional multi-select)
+
+The **Strict target ontology** toggle is shown only when EFO is selected as a
+target ontology; when enabled, it is forwarded to the mapper.
 
 The result view shows the best match, confidence, ontology, retrieval method,
 configured provider/model, explanation details, and alternatives. Users can copy
@@ -215,10 +236,10 @@ detect column mappings, then lets the user choose:
 - **Data type** (optional)
 - **Target ontology** (optional per-row ontology column)
 
-Mapping options include target ontology multi-select and **Auto-accept above**.
-The page still displays a **Use RAG grounding** checkbox and passes `use_rag` to
-the backend for compatibility, but planned retrieval is controlled by
-`Settings.retrieval_mode`.
+Mapping options include target ontology multi-select and **Auto-accept above**,
+a page-local threshold (default 85%) that is separate from the Settings-page
+`rag_auto_accept_threshold` described above. Retrieval is controlled entirely
+by `Settings.retrieval_mode`.
 
 Batch status is polled every 1.5 seconds while running. Leaving the page or
 unmounting the batch component sends a cancellation request; the UI warns users

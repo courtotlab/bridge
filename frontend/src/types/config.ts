@@ -3,12 +3,8 @@ export type Provider = 'ollama' | 'ollama_cloud' | 'openai' | 'anthropic';
 export type LayerState = 'ok' | 'warning' | 'disabled' | 'error';
 
 export interface AppConfig {
-  // Layer 1
-  use_ner: boolean;
-
   // Layer 2
   retrieval_mode: RetrievalMode;
-  bioportal_api_key: string | null;
   loinc_username: string | null;
   loinc_password: string | null;
   sapbert_server_url: string;
@@ -23,7 +19,6 @@ export interface AppConfig {
 }
 
 export interface LayerStatus {
-  layer1: LayerState;
   layer2: LayerState;
   layer3: LayerState;
 }

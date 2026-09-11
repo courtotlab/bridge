@@ -30,9 +30,7 @@ const MASKED_SECRET_SENTINEL = '••••••••';
 const LOINC_ACCOUNT_URL = 'https://loinc.org/join/';
 
 const baseConfig: AppConfig = {
-  use_ner: true,
   retrieval_mode: 'public',
-  bioportal_api_key: null,
   loinc_username: null,
   loinc_password: null,
   sapbert_server_url: 'http://localhost:8000',

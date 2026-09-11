@@ -9,12 +9,11 @@ _CONFIG_FILE = _CONFIG_DIR / "config.json"
 
 MASKED_SECRET_SENTINEL = "••••••••"
 
-_SENSITIVE_FIELDS = {"api_key", "bioportal_api_key", "loinc_password"}
+_SENSITIVE_FIELDS = {"api_key", "loinc_password"}
 
 # Module-level store for sensitive fields — held in memory, never written to disk
 _sensitive: dict[str, str | None] = {
     "api_key": None,
-    "bioportal_api_key": None,
     "loinc_password": None,
 }
 

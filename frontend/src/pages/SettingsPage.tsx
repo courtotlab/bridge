@@ -44,9 +44,7 @@ type TestSnapshot = {
 
 export default function SettingsPage() {
   const [config, setConfig] = useState<AppConfig>({
-    use_ner: true,
     retrieval_mode: 'public',
-    bioportal_api_key: null,
     loinc_username: null,
     loinc_password: null,
     sapbert_server_url: 'http://localhost:8000',

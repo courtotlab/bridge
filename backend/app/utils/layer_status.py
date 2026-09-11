@@ -17,15 +17,6 @@ _CLOUD_PROVIDERS = frozenset({"openai", "anthropic", "ollama_cloud"})
 _LayerState = Literal["ok", "warning", "disabled", "error"]
 
 
-def _check_scispacy() -> bool:
-    try:
-        import spacy  # noqa: F401
-
-        return True
-    except ImportError:
-        return False
-
-
 def _compute_retrieval_status(config: AppConfig) -> _LayerState:
     if config.retrieval_mode == "disabled":
         return "disabled"
@@ -39,14 +30,6 @@ def _compute_retrieval_status(config: AppConfig) -> _LayerState:
 
 
 def compute_layer_status(config: AppConfig) -> LayerStatus:
-    # Layer 1 — NER
-    if not config.use_ner:
-        l1: _LayerState = "disabled"
-    elif _check_scispacy():
-        l1 = "ok"
-    else:
-        l1 = "warning"
-
     # Layer 2 — Retrieval (explicit validation only; not inferred from config defaults)
     l2 = _compute_retrieval_status(config)
 
@@ -66,4 +49,4 @@ def compute_layer_status(config: AppConfig) -> LayerStatus:
     else:
         l3 = "warning"
 
-    return LayerStatus(layer1=l1, layer2=l2, layer3=l3)
+    return LayerStatus(layer2=l2, layer3=l3)

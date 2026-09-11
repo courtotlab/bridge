@@ -4,12 +4,8 @@ from pydantic import BaseModel, Field
 
 
 class AppConfig(BaseModel):
-    # Layer 1 — NER extraction
-    use_ner: bool = True
-
     # Layer 2 — Candidate retrieval
     retrieval_mode: Literal["public", "local", "disabled"] = "public"
-    bioportal_api_key: str | None = None  # in-memory only, not saved to disk
     loinc_username: str | None = None
     loinc_password: str | None = None  # in-memory only, never saved to disk
     sapbert_server_url: str = "http://localhost:8000"
@@ -24,7 +20,6 @@ class AppConfig(BaseModel):
 
 
 class LayerStatus(BaseModel):
-    layer1: Literal["ok", "warning", "disabled", "error"]
     layer2: Literal["ok", "warning", "disabled", "error"]
     layer3: Literal["ok", "warning", "disabled", "error"]
 

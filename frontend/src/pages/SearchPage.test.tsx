@@ -33,9 +33,7 @@ vi.mock('../context/SessionContext', () => ({
 const SINGLE_TERM_RESULT_STORAGE_KEY = 'bridge:single-term-result';
 
 const baseConfig: AppConfig = {
-  use_ner: true,
   retrieval_mode: 'public',
-  bioportal_api_key: null,
   loinc_username: null,
   loinc_password: null,
   sapbert_server_url: 'http://localhost:8765',

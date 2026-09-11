@@ -56,9 +56,7 @@ vi.mock('../api/configApi', () => ({
 }));
 
 const baseConfig: AppConfig = {
-  use_ner: true,
   retrieval_mode: 'public',
-  bioportal_api_key: null,
   loinc_username: null,
   loinc_password: null,
   sapbert_server_url: 'http://localhost:8765',
@@ -363,7 +361,6 @@ beforeEach(() => {
   mocks.completeSession.mockResolvedValue(undefined);
   mocks.getStatus.mockResolvedValue({
     status: {
-      layer1: 'ok',
       layer2: 'ok',
       layer3: 'ok',
     },

@@ -27,7 +27,6 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 const LAYER_STATUS_LABEL: Record<keyof LayerStatus, Partial<Record<string, string>>> = {
-  layer1: {},
   layer2: { warning: 'Retrieval not checked' },
   layer3: {},
 };

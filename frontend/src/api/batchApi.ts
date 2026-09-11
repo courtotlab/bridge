@@ -43,7 +43,6 @@ export async function startBatch(params: {
   clinicalArea?: string | null;
   targetOntologyColumn?: string | null;
   targetOntologies?: string[];
-  useRag: boolean;
   autoAcceptThreshold: number;
   sessionId?: string | null;
   strictTargetOntology?: boolean;
@@ -56,7 +55,6 @@ export async function startBatch(params: {
     form.append('target_ontology_column', params.targetOntologyColumn);
   }
   appendTargetOntologiesJson(form, params.targetOntologies);
-  form.append('use_rag', String(params.useRag));
   form.append('auto_accept_threshold', String(params.autoAcceptThreshold));
   if (params.sessionId) form.append('session_id', params.sessionId);
   form.append('strict_target_ontology', String(params.strictTargetOntology ?? false));

@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from llm_ontology_mapper import PlannedPipelineError, PublicRetrievalError
+from llm_ontology_mapper.providers import LLMCallConfig
 
 from app.models.config import AppConfig
 from app.models.mapping import SingleMappingRequest
@@ -131,6 +132,7 @@ def test_single_mapping_constructs_planned_mapper_for_public_and_disabled(
         provider=deps.provider,
         public_retriever=deps.public_retriever_cls.calls[0]["instance"],
         local_retriever=None,
+        llm_call_config=None,
     )
     assert response.target_code == "HP:0001250"
     mapper_instance.map_term.assert_called_once_with(
@@ -211,6 +213,7 @@ def test_single_mapping_local_injects_planned_pipeline_with_sapbert_url(monkeypa
         provider=deps.provider,
         public_retriever=deps.public_retriever_cls.calls[0]["instance"],
         local_retriever=local_retriever,
+        llm_call_config=None,
     )
     kwargs = mapper_cls.call_args.kwargs
     assert kwargs["ontologies"] is None
@@ -1951,3 +1954,91 @@ def test_batch_mapping_unmapped_row_has_no_url(monkeypatch):
     row = job["results"][0]
     assert row.suggested_code == "UNMAPPED"
     assert row.suggested_url is None
+
+
+# ── OpenAI reasoning propagation ─────────────────────────────────────────────
+
+
+def test_openai_explicit_reasoning_builds_strict_llm_call_config(monkeypatch):
+    config = AppConfig(provider="openai", model="gpt-5.1", reasoning_effort="high")
+    _patch_config(monkeypatch, config)
+    deps = _patch_planned_dependencies(monkeypatch)
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result()
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+
+    mapper_service.map_single_term(SingleMappingRequest(source_term="seizure"))
+
+    call_config = deps.planned_pipeline_cls.call_args.kwargs["llm_call_config"]
+    # strict=True: an explicit user-selected reasoning value must not be
+    # silently dropped if OpenAI later rejects it during a real mapping call.
+    assert call_config == LLMCallConfig(reasoning_effort="high", strict=True)
+
+
+def test_openai_without_reasoning_effort_preserves_previous_behavior(monkeypatch):
+    config = AppConfig(provider="openai", model="gpt-4o", reasoning_effort=None)
+    _patch_config(monkeypatch, config)
+    deps = _patch_planned_dependencies(monkeypatch)
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result()
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+
+    mapper_service.map_single_term(SingleMappingRequest(source_term="seizure"))
+
+    assert deps.planned_pipeline_cls.call_args.kwargs["llm_call_config"] is None
+
+
+def test_non_openai_provider_never_builds_llm_call_config(monkeypatch):
+    """reasoning_effort is OpenAI-specific — even if somehow present on a
+    non-OpenAI config, it must never construct an override for another
+    provider's pipeline."""
+    config = AppConfig(provider="ollama", model="llama3.2", reasoning_effort="high")
+    _patch_config(monkeypatch, config)
+    deps = _patch_planned_dependencies(monkeypatch)
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result()
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+
+    mapper_service.map_single_term(SingleMappingRequest(source_term="seizure"))
+
+    assert deps.planned_pipeline_cls.call_args.kwargs["llm_call_config"] is None
+
+
+def test_batch_mapping_receives_same_llm_call_config_as_single_mapping(monkeypatch):
+    config = AppConfig(provider="openai", model="gpt-5.1", reasoning_effort="medium")
+    _patch_config(monkeypatch, config)
+    deps = _patch_planned_dependencies(monkeypatch)
+    mapper_service._batch_jobs.clear()
+
+    mapper_instance = MagicMock()
+    mapper_instance.map_term.return_value = _result()
+    monkeypatch.setattr(
+        "llm_ontology_mapper.OntologyMapper",
+        MagicMock(return_value=mapper_instance),
+    )
+    monkeypatch.setattr("threading.Thread", _SyncThread)
+
+    job_id = mapper_service.start_batch_job(
+        records=[{"field_name": "sbp", "label": "Systolic blood pressure"}],
+        column_map={"field_name": "field_name", "label": "label"},
+        clinical_area=None,
+        target_ontologies=None,
+        auto_accept_threshold=0.85,
+    )
+
+    job = mapper_service.get_batch_job(job_id)
+    assert job["status"] == "done"
+    call_config = deps.planned_pipeline_cls.call_args.kwargs["llm_call_config"]
+    assert call_config == LLMCallConfig(reasoning_effort="medium", strict=True)

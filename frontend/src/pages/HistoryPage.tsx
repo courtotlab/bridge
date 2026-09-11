@@ -107,7 +107,6 @@ function configurationRows(configuration?: HistoryConfiguration | null): Array<[
   addRow(rows, 'Retrieval method', configuration.retrieval_method ? formatRetrievalMode(configuration.retrieval_method) : null);
   addRow(rows, 'AI provider', configuration.provider);
   addRow(rows, 'Model', configuration.model);
-  addRow(rows, 'RAG/retrieval', configuration.rag_enabled);
   return rows;
 }
 

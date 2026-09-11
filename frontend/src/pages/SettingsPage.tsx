@@ -11,7 +11,14 @@ import {
   testConnection,
 } from '../api/configApi';
 import AccordionSection from '../components/AccordionSection';
-import type { AppConfig, ComponentTestResult, ConnectionTestResponse, Provider, RetrievalMode } from '../types/config';
+import type {
+  AppConfig,
+  ComponentTestResult,
+  ConnectionTestResponse,
+  Provider,
+  ReasoningCapability,
+  RetrievalMode,
+} from '../types/config';
 
 const DEFAULT_MODEL: Record<Provider, string> = {
   ollama: '',
@@ -48,6 +55,7 @@ export default function SettingsPage() {
     model: 'llama3.2',
     base_url: 'http://localhost:11434',
     api_key: null,
+    reasoning_effort: null,
   });
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -81,6 +89,12 @@ export default function SettingsPage() {
   const [anthropicModels, setAnthropicModels] = useState<string[]>([]);
   const [anthropicModelsWarning, setAnthropicModelsWarning] = useState<string | null>(null);
   const [anthropicModelsError, setAnthropicModelsError] = useState<string | null>(null);
+
+  // Reasoning capability for the currently-tested OpenAI model (from the
+  // last testConnection response). null until a model has been tested
+  // against the current API key — see the read-only fallback rendering
+  // for a previously saved reasoning_effort before that first test.
+  const [reasoningCapability, setReasoningCapability] = useState<ReasoningCapability | null>(null);
 
   // True when the API key field changed since the last successful connection test
   const [apiKeyDirty, setApiKeyDirty] = useState(false);
@@ -185,13 +199,23 @@ export default function SettingsPage() {
 
   function patchModel(model: string) {
     clearAiModelResult();
+    // A different model may support different reasoning values (or none) —
+    // never carry a reasoning selection from one model to another.
+    setReasoningCapability(null);
     setConfig((prev) => {
-      const next = { ...prev, model };
+      const next = { ...prev, model, reasoning_effort: null };
       configRef.current = next;
       return next;
     });
     setDirty(true);
     setSaveMsg('');
+  }
+
+  function handleReasoningChange(reasoning_effort: string) {
+    // The exact model + reasoning combination has changed — the previous
+    // successful AI Model test no longer proves the new combination works.
+    clearAiModelResult();
+    patch({ reasoning_effort });
   }
 
   function normalizedLoincPasswordForSave(): string | null {
@@ -254,6 +278,31 @@ export default function SettingsPage() {
     }
   }
 
+  /**
+   * Reconcile OpenAI reasoning UI/config state with a fresh testConnection
+   * response. `result.reasoning` is only absent when the backend never
+   * reached capability resolution for this request (no model selected,
+   * invalid API key, network failure) — in that case the previously saved
+   * reasoning_effort is left untouched rather than guessed away.
+   */
+  function applyReasoningCapabilityFromTest(result: ConnectionTestResponse) {
+    const capability = result.reasoning ?? null;
+    setReasoningCapability(capability);
+    if (!capability) return;
+    setConfig((prev) => {
+      const nextReasoning =
+        capability.status === 'supported'
+          ? prev.reasoning_effort && capability.options.includes(prev.reasoning_effort)
+            ? prev.reasoning_effort
+            : capability.default
+          : null;
+      if (nextReasoning === prev.reasoning_effort) return prev;
+      const next = { ...prev, reasoning_effort: nextReasoning };
+      configRef.current = next;
+      return next;
+    });
+  }
+
   function isApiKeyValidated(result: ConnectionTestResponse): boolean {
     return result.api_key_ok === true;
   }
@@ -284,9 +333,10 @@ export default function SettingsPage() {
     setApiKeyDirty(true);
     clearProviderModels();
     clearAiModelResult();
+    setReasoningCapability(null);
     if (CLOUD_PROVIDERS.includes(configRef.current.provider)) {
       setConfig((prev) => {
-        const next = { ...prev, model: '' };
+        const next = { ...prev, model: '', reasoning_effort: null };
         configRef.current = next;
         return next;
       });
@@ -320,7 +370,13 @@ export default function SettingsPage() {
     setAnthropicModelsWarning(null);
     setAnthropicModelsError(null);
     setApiKeyDisplay('');
-    const nextConfig = { ...configRef.current, provider, model: DEFAULT_MODEL[provider] };
+    setReasoningCapability(null);
+    const nextConfig = {
+      ...configRef.current,
+      provider,
+      model: DEFAULT_MODEL[provider],
+      reasoning_effort: null,
+    };
     configRef.current = nextConfig;
     setConfig(nextConfig);
     setDirty(true);
@@ -420,6 +476,9 @@ export default function SettingsPage() {
         if (result.available_models?.length) {
           applyCloudModelsFromTest(payload.provider, result);
         }
+        if (payload.provider === 'openai') {
+          applyReasoningCapabilityFromTest(result);
+        }
         return;
       }
 
@@ -514,6 +573,15 @@ export default function SettingsPage() {
     config.provider === 'openai' && !apiKeyDirty && openaiModels.length > 0 && !openaiModelsError;
   const showAnthropicModels =
     config.provider === 'anthropic' && !apiKeyDirty && anthropicModels.length > 0 && !anthropicModelsError;
+  // Supported/unknown: driven by the latest test result. When no test has
+  // run yet against the current API key (reasoningCapability === null) but
+  // a reasoning value was previously saved, fall back to a read-only view
+  // of that saved value instead of inventing fresh capability info.
+  const showOpenaiReasoning =
+    config.provider === 'openai' &&
+    (reasoningCapability?.status === 'supported' ||
+      reasoningCapability?.status === 'unknown' ||
+      (reasoningCapability === null && Boolean(config.reasoning_effort)));
 
   return (
     <div className="settings-page">
@@ -880,10 +948,11 @@ export default function SettingsPage() {
               />
             </div>
             <div className="field-group">
-              <label className="field-label">Model</label>
+              <label className="field-label" htmlFor="openai-model">Model</label>
               {openaiModelsError ? (
                 <>
                   <input
+                    id="openai-model"
                     type="text"
                     className="form-input"
                     value={config.model}
@@ -894,6 +963,7 @@ export default function SettingsPage() {
               ) : showOpenaiModels ? (
                 <>
                   <select
+                    id="openai-model"
                     className="form-input form-select"
                     value={config.model}
                     onChange={(e) => patchModel(e.target.value)}
@@ -909,6 +979,7 @@ export default function SettingsPage() {
                 </>
               ) : (
                 <input
+                  id="openai-model"
                   type="text"
                   className="form-input"
                   disabled
@@ -921,6 +992,49 @@ export default function SettingsPage() {
                 Click &quot;Test connection&quot; to discover available models.
               </p>
             </div>
+
+            {showOpenaiReasoning && (
+              <div className="field-group">
+                <label className="field-label" htmlFor="openai-reasoning">Reasoning</label>
+                {reasoningCapability?.status === 'supported' ? (
+                  <>
+                    <select
+                      id="openai-reasoning"
+                      className="form-input form-select"
+                      value={config.reasoning_effort ?? ''}
+                      onChange={(e) => handleReasoningChange(e.target.value)}
+                    >
+                      {reasoningCapability.options.map((opt) => (
+                        <option key={opt} value={opt}>{opt}</option>
+                      ))}
+                    </select>
+                    <p className="field-helper">
+                      <span className="info-icon">ℹ️</span>{' '}
+                      Changing this requires testing the connection again before it&apos;s validated.
+                    </p>
+                  </>
+                ) : reasoningCapability?.status === 'unknown' ? (
+                  <p className="field-helper">
+                    Reasoning options are not available for this model in this app yet.
+                  </p>
+                ) : (
+                  <>
+                    <input
+                      id="openai-reasoning"
+                      type="text"
+                      className="form-input"
+                      value={config.reasoning_effort ?? ''}
+                      disabled
+                    />
+                    <p className="field-helper">
+                      <span className="info-icon">ℹ️</span>{' '}
+                      Showing the last saved reasoning setting. Click &quot;Test connection&quot; to
+                      refresh the supported options for this model.
+                    </p>
+                  </>
+                )}
+              </div>
+            )}
           </div>
         )}
 

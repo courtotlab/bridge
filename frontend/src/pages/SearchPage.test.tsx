@@ -44,6 +44,7 @@ const baseConfig: AppConfig = {
   model: 'llama3.2',
   base_url: 'http://localhost:11434',
   api_key: null,
+  reasoning_effort: null,
 };
 
 function mappingResponse(

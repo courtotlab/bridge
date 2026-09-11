@@ -46,7 +46,6 @@ export interface HistoryConfiguration {
   retrieval_method?: string | null;
   provider?: string | null;
   model?: string | null;
-  rag_enabled?: boolean | null;
   strict_target_ontology?: boolean | null;
 }
 

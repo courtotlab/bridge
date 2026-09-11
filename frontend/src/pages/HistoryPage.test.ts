@@ -115,6 +115,12 @@ describe('HistoryPage details', () => {
     expect(screen.queryByText('Event Timeline')).not.toBeInTheDocument();
     expect(screen.queryByText('Result Snapshot')).not.toBeInTheDocument();
     expect(screen.queryByText(/Click any row/)).not.toBeInTheDocument();
+
+    // The real retrieval configuration is still shown...
+    expect(screen.getByText('Retrieval method')).toBeInTheDocument();
+    expect(screen.getAllByText('Local retrieval (grounded)').length).toBeGreaterThan(0);
+    // ...but the stale, RAG-checkbox-derived row must not reappear.
+    expect(screen.queryByText('RAG/retrieval')).not.toBeInTheDocument();
   });
 
   it('renders archived batch rows and decisions read-only', async () => {

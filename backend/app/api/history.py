@@ -145,7 +145,6 @@ def _configuration_from(
     batch_rows: list[BatchRowResult] | None = None,
 ) -> HistoryConfiguration | None:
     result = result or {}
-    start_payload = _event_payload(record, "batch_started", "session_started")
     first_row = batch_rows[0] if batch_rows else None
     metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
 
@@ -167,9 +166,6 @@ def _configuration_from(
             or (metadata or {}).get("model")
             or (first_row.configured_model if first_row else None)
         ),
-        rag_enabled=start_payload.get("use_rag")
-        if isinstance(start_payload.get("use_rag"), bool)
-        else None,
         strict_target_ontology=record.input_summary.strict_target_ontology,
     )
     return configuration if configuration.model_dump(exclude_none=True) else None

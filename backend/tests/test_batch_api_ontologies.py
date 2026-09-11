@@ -779,6 +779,74 @@ def test_promote_alternative_updates_row_and_exported_mapping():
         _batch_jobs.pop(job_id, None)
 
 
+def test_start_batch_omitted_use_rag_still_works_and_is_not_forwarded(monkeypatch):
+    """Compatibility: a client that no longer sends `use_rag` (current
+    frontend behavior) must still succeed, and the deprecated field must
+    never reach start_batch_job — actual retrieval is controlled solely by
+    Settings.retrieval_mode (see app.services.mapper_service._build_mapper_kwargs
+    and the corresponding "use_rag" not in kwargs assertions against
+    OntologyMapper in test_mapper_planned_pipeline.py).
+    """
+    captured = {}
+
+    def fake_start_batch_job(**kwargs):
+        captured.update(kwargs)
+        return "job-1"
+
+    monkeypatch.setattr("app.api.batch.start_batch_job", fake_start_batch_job)
+
+    response = client.post(
+        "/api/batch/start",
+        data=_form_data(_OMITTED),
+        files=_csv_upload(),
+    )
+
+    assert response.status_code == 200
+    assert "use_rag" not in captured
+
+
+def test_start_batch_legacy_use_rag_true_is_accepted_and_ignored(monkeypatch):
+    """Compatibility: an older/cached client still sending `use_rag=true`
+    must not break — the field is accepted and silently ignored."""
+    captured = {}
+
+    def fake_start_batch_job(**kwargs):
+        captured.update(kwargs)
+        return "job-1"
+
+    monkeypatch.setattr("app.api.batch.start_batch_job", fake_start_batch_job)
+
+    response = client.post(
+        "/api/batch/start",
+        data={**_form_data(_OMITTED), "use_rag": "true"},
+        files=_csv_upload(),
+    )
+
+    assert response.status_code == 200
+    assert "use_rag" not in captured
+
+
+def test_start_batch_legacy_use_rag_false_is_accepted_and_ignored(monkeypatch):
+    """Compatibility: an older/cached client still sending `use_rag=false`
+    must not break — the field is accepted and silently ignored."""
+    captured = {}
+
+    def fake_start_batch_job(**kwargs):
+        captured.update(kwargs)
+        return "job-1"
+
+    monkeypatch.setattr("app.api.batch.start_batch_job", fake_start_batch_job)
+
+    response = client.post(
+        "/api/batch/start",
+        data={**_form_data(_OMITTED), "use_rag": "false"},
+        files=_csv_upload(),
+    )
+
+    assert response.status_code == 200
+    assert "use_rag" not in captured
+
+
 def test_promote_alternative_from_unmapped_primary_does_not_demote_placeholder():
     job_id = "test-promote-from-unmapped"
     _batch_jobs[job_id] = {

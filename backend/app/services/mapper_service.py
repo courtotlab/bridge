@@ -341,6 +341,24 @@ def _build_public_retriever(config):
     )
 
 
+def _build_llm_call_config(config):
+    """Explicit reasoning override forwarded to every LLM call the planned
+    pipeline makes (QueryPlanner + LLMReranker), when the user has selected
+    an OpenAI reasoning effort in Settings.
+
+    strict=True: this represents an explicit user configuration, not an
+    internal default — if OpenAI rejects it, the call must fail rather than
+    the library silently retrying without reasoning_effort and succeeding
+    with a configuration the user didn't choose.
+    """
+    if config.provider != "openai" or not config.reasoning_effort:
+        return None
+
+    from llm_ontology_mapper.providers import LLMCallConfig  # type: ignore[import-untyped]
+
+    return LLMCallConfig(reasoning_effort=config.reasoning_effort, strict=True)
+
+
 def _build_planned_pipeline(config, *, local_retriever=None):
     from llm_ontology_mapper import PlannedPipeline  # type: ignore[import-untyped]
 
@@ -349,6 +367,7 @@ def _build_planned_pipeline(config, *, local_retriever=None):
         provider=llm_provider,
         public_retriever=_build_public_retriever(config),
         local_retriever=local_retriever,
+        llm_call_config=_build_llm_call_config(config),
     )
 
 

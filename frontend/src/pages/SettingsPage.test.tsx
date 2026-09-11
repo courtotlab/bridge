@@ -41,6 +41,7 @@ const baseConfig: AppConfig = {
   model: 'llama3.2',
   base_url: 'http://localhost:11434',
   api_key: null,
+  reasoning_effort: null,
 };
 
 function componentResult(
@@ -530,5 +531,244 @@ describe('SettingsPage connection testing', () => {
     expect(await screen.findByText('Could not load models from this Ollama server.')).toBeInTheDocument();
     expect(screen.getByLabelText('LOINC username')).toHaveValue('loinc-user');
     expect(mocks.testConnection).not.toHaveBeenCalled();
+  });
+});
+
+describe('SettingsPage OpenAI reasoning', () => {
+  /** Provider selected, key entered, first Test connection loads the model list. */
+  async function selectOpenAiAndDiscoverModels(
+    user: ReturnType<typeof userEvent.setup>,
+    models: string[],
+  ) {
+    await user.click(screen.getByRole('radio', { name: /openai/i }));
+    await user.type(screen.getByPlaceholderText('sk-...'), 'sk-test-key');
+    mocks.testConnection.mockResolvedValueOnce(
+      connectionResponse({
+        candidate_retrieval: componentResult(
+          'not_required',
+          'Candidate retrieval is disabled; no connection test was required.',
+          'retrieval_disabled',
+        ),
+        ai_model: componentResult('valid', 'OpenAI API key is valid. Select a model to test it.'),
+        available_models: models,
+        model_ok: null,
+        success: false,
+        reasoning: null,
+      }),
+    );
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+    await waitFor(() => expect(mocks.testConnection).toHaveBeenCalledTimes(1));
+    return screen.findByRole('combobox', { name: 'Model' });
+  }
+
+  it('shows no reasoning field before any model has been tested', async () => {
+    const { user } = setup({ retrieval_mode: 'disabled' });
+    await selectOpenAiAndDiscoverModels(user, ['gpt-4o', 'gpt-5.1']);
+
+    expect(screen.queryByLabelText('Reasoning')).not.toBeInTheDocument();
+  });
+
+  it('shows the reasoning selector with backend options and preselects the documented default', async () => {
+    const { user } = setup({ retrieval_mode: 'disabled' });
+    const modelSelect = await selectOpenAiAndDiscoverModels(user, ['gpt-4o', 'gpt-5.1']);
+
+    mocks.testConnection.mockResolvedValueOnce(
+      connectionResponse({
+        available_models: ['gpt-4o', 'gpt-5.1'],
+        reasoning: { status: 'supported', options: ['none', 'low', 'medium', 'high'], default: 'none' },
+      }),
+    );
+    await user.selectOptions(modelSelect, 'gpt-5.1');
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+    const reasoningSelect = await screen.findByRole('combobox', { name: 'Reasoning' });
+    expect(within(reasoningSelect).getAllByRole('option').map((o) => o.textContent)).toEqual([
+      'none',
+      'low',
+      'medium',
+      'high',
+    ]);
+    expect(reasoningSelect).toHaveValue('none');
+  });
+
+  it('invalidates the prior successful test and sends the changed reasoning on retest', async () => {
+    const { user } = setup({ retrieval_mode: 'disabled' });
+    const modelSelect = await selectOpenAiAndDiscoverModels(user, ['gpt-5.1']);
+    mocks.testConnection.mockResolvedValueOnce(
+      connectionResponse({
+        available_models: ['gpt-5.1'],
+        reasoning: { status: 'supported', options: ['none', 'low', 'medium', 'high'], default: 'none' },
+      }),
+    );
+    await user.selectOptions(modelSelect, 'gpt-5.1');
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+    await screen.findByText('AI Model:');
+
+    const reasoningSelect = await screen.findByRole('combobox', { name: 'Reasoning' });
+    await user.selectOptions(reasoningSelect, 'high');
+
+    expect(screen.queryByText('AI Model:')).not.toBeInTheDocument();
+
+    mocks.testConnection.mockResolvedValueOnce(
+      connectionResponse({
+        available_models: ['gpt-5.1'],
+        reasoning: { status: 'supported', options: ['none', 'low', 'medium', 'high'], default: 'none' },
+      }),
+    );
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+    await waitFor(() => expect(mocks.testConnection).toHaveBeenCalledTimes(3));
+    const payload = mocks.testConnection.mock.calls[2][0] as AppConfig;
+    expect(payload.model).toBe('gpt-5.1');
+    expect(payload.reasoning_effort).toBe('high');
+  });
+
+  it('includes the selected reasoning in the save payload', async () => {
+    const { user } = setup({ retrieval_mode: 'disabled' });
+    const modelSelect = await selectOpenAiAndDiscoverModels(user, ['gpt-5.1']);
+    mocks.testConnection.mockResolvedValueOnce(
+      connectionResponse({
+        available_models: ['gpt-5.1'],
+        reasoning: { status: 'supported', options: ['none', 'low', 'medium', 'high'], default: 'none' },
+      }),
+    );
+    await user.selectOptions(modelSelect, 'gpt-5.1');
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+    const reasoningSelect = await screen.findByRole('combobox', { name: 'Reasoning' });
+    await user.selectOptions(reasoningSelect, 'high');
+
+    await user.click(screen.getByRole('button', { name: /save settings/i }));
+
+    await waitFor(() => expect(mocks.saveConfig).toHaveBeenCalled());
+    const saved = mocks.saveConfig.mock.calls[0][0] as AppConfig;
+    expect(saved.reasoning_effort).toBe('high');
+  });
+
+  it('clears reasoning when the model changes and never carries a value to the new model', async () => {
+    const { user } = setup({ retrieval_mode: 'disabled' });
+    const modelSelect = await selectOpenAiAndDiscoverModels(user, ['gpt-4o', 'gpt-5.1']);
+    mocks.testConnection.mockResolvedValueOnce(
+      connectionResponse({
+        available_models: ['gpt-4o', 'gpt-5.1'],
+        reasoning: { status: 'supported', options: ['none', 'low', 'medium', 'high'], default: 'none' },
+      }),
+    );
+    await user.selectOptions(modelSelect, 'gpt-5.1');
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+    await screen.findByRole('combobox', { name: 'Reasoning' });
+
+    await user.selectOptions(modelSelect, 'gpt-4o');
+
+    expect(screen.queryByLabelText('Reasoning')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+    await waitFor(() => expect(mocks.testConnection).toHaveBeenCalledTimes(3));
+    const payload = mocks.testConnection.mock.calls[2][0] as AppConfig;
+    expect(payload.model).toBe('gpt-4o');
+    expect(payload.reasoning_effort).toBeNull();
+  });
+
+  it('keeps the reasoning selector hidden for a model confirmed not to support it', async () => {
+    const { user } = setup({ retrieval_mode: 'disabled' });
+    const modelSelect = await selectOpenAiAndDiscoverModels(user, ['gpt-4o']);
+    mocks.testConnection.mockResolvedValueOnce(
+      connectionResponse({
+        available_models: ['gpt-4o'],
+        reasoning: { status: 'unsupported', options: [], default: null },
+      }),
+    );
+    await user.selectOptions(modelSelect, 'gpt-4o');
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+    await screen.findByText('AI Model:');
+    expect(screen.queryByLabelText('Reasoning')).not.toBeInTheDocument();
+  });
+
+  it('shows a neutral helper message for an unknown model instead of a selector', async () => {
+    const { user } = setup({ retrieval_mode: 'disabled' });
+    const modelSelect = await selectOpenAiAndDiscoverModels(user, ['gpt-9-nebula']);
+    mocks.testConnection.mockResolvedValueOnce(
+      connectionResponse({
+        available_models: ['gpt-9-nebula'],
+        reasoning: { status: 'unknown', options: [], default: null },
+      }),
+    );
+    await user.selectOptions(modelSelect, 'gpt-9-nebula');
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+    await screen.findByText('Reasoning');
+    expect(
+      screen.getByText('Reasoning options are not available for this model in this app yet.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Reasoning' })).not.toBeInTheDocument();
+  });
+
+  it('clears reasoning state when the API key changes', async () => {
+    const { user } = setup({ retrieval_mode: 'disabled' });
+    const modelSelect = await selectOpenAiAndDiscoverModels(user, ['gpt-5.1']);
+    mocks.testConnection.mockResolvedValueOnce(
+      connectionResponse({
+        available_models: ['gpt-5.1'],
+        reasoning: { status: 'supported', options: ['none', 'low', 'medium', 'high'], default: 'none' },
+      }),
+    );
+    await user.selectOptions(modelSelect, 'gpt-5.1');
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+    await screen.findByRole('combobox', { name: 'Reasoning' });
+
+    await user.type(screen.getByPlaceholderText('sk-...'), '-changed');
+
+    expect(screen.queryByLabelText('Reasoning')).not.toBeInTheDocument();
+  });
+
+  it('clears reasoning state when the provider changes away and back', async () => {
+    const { user } = setup({ retrieval_mode: 'disabled' });
+    const modelSelect = await selectOpenAiAndDiscoverModels(user, ['gpt-5.1']);
+    mocks.testConnection.mockResolvedValueOnce(
+      connectionResponse({
+        available_models: ['gpt-5.1'],
+        reasoning: { status: 'supported', options: ['none', 'low', 'medium', 'high'], default: 'none' },
+      }),
+    );
+    await user.selectOptions(modelSelect, 'gpt-5.1');
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+    await screen.findByRole('combobox', { name: 'Reasoning' });
+
+    await user.click(screen.getByRole('radio', { name: /anthropic/i }));
+    await user.click(screen.getByRole('radio', { name: /openai/i }));
+
+    expect(screen.queryByLabelText('Reasoning')).not.toBeInTheDocument();
+  });
+
+  it('shows a saved reasoning value read-only before the first test this session, then reconciles it once stale', async () => {
+    const { user } = setup({
+      retrieval_mode: 'disabled',
+      provider: 'openai',
+      model: 'gpt-5.1',
+      reasoning_effort: 'medium',
+      api_key: 'sk-existing-key',
+    });
+
+    const readOnlyField = await screen.findByLabelText('Reasoning');
+    expect(readOnlyField).toBeDisabled();
+    expect(readOnlyField).toHaveValue('medium');
+    expect(
+      screen.getByText(/Showing the last saved reasoning setting/),
+    ).toBeInTheDocument();
+
+    mocks.testConnection.mockResolvedValueOnce(
+      connectionResponse({
+        available_models: ['gpt-5.1'],
+        reasoning: { status: 'supported', options: ['none', 'low'], default: 'none' },
+      }),
+    );
+    await user.click(screen.getByRole('button', { name: /test connection/i }));
+
+    const reasoningSelect = await screen.findByRole('combobox', { name: 'Reasoning' });
+    // 'medium' is no longer a valid option for this model — reset to the
+    // freshly reported default rather than silently kept.
+    expect(reasoningSelect).toHaveValue('none');
+    await waitFor(() => expect(mocks.testConnection).toHaveBeenCalledTimes(1));
+    const payload = mocks.testConnection.mock.calls[0][0] as AppConfig;
+    expect(payload.reasoning_effort).toBe('medium');
   });
 });

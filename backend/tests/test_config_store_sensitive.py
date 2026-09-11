@@ -135,6 +135,37 @@ def test_get_validated_loinc_credentials_rejects_changed_username():
     assert config_store.get_validated_loinc_credentials(changed) is None
 
 
+def test_reasoning_effort_defaults_to_none():
+    assert AppConfig().reasoning_effort is None
+
+
+def test_reasoning_effort_persists_through_save_and_load(isolated_config_store):
+    config_store.save_config(
+        AppConfig(provider="openai", model="gpt-5.1", reasoning_effort="low")
+    )
+
+    data = json.loads(isolated_config_store.read_text(encoding="utf-8"))
+    assert data["reasoning_effort"] == "low"
+
+    loaded = config_store.load_config()
+    assert loaded.reasoning_effort == "low"
+
+
+def test_old_config_file_without_reasoning_effort_loads_as_none(isolated_config_store):
+    isolated_config_store.write_text(
+        json.dumps({"provider": "openai", "model": "gpt-4o"}), encoding="utf-8"
+    )
+
+    loaded = config_store.load_config()
+
+    assert loaded.reasoning_effort is None
+    assert loaded.model == "gpt-4o"
+
+
+def test_reasoning_effort_is_not_a_secret_field():
+    assert "reasoning_effort" not in config_store._SENSITIVE_FIELDS
+
+
 def test_get_validated_loinc_credentials_rejects_memory_loss():
     config_store.save_config(
         AppConfig(

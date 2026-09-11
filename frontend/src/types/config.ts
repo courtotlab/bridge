@@ -19,6 +19,7 @@ export interface AppConfig {
   model: string;
   base_url: string;
   api_key: string | null;
+  reasoning_effort: string | null; // OpenAI-specific; null = provider/library default or not applicable
 }
 
 export interface LayerStatus {
@@ -52,6 +53,14 @@ export type ConnectionTestErrorType =
   | 'network_error'
   | 'unknown';
 
+export type ReasoningStatus = 'supported' | 'unsupported' | 'unknown';
+
+export interface ReasoningCapability {
+  status: ReasoningStatus;
+  options: string[];
+  default: string | null;
+}
+
 export interface ConnectionTestResponse {
   success: boolean;
   message: string;
@@ -68,6 +77,7 @@ export interface ConnectionTestResponse {
   error_type?: ConnectionTestErrorType | null;
   warning?: string | null;
   resident_model?: string | null;
+  reasoning?: ReasoningCapability | null;
 }
 
 export interface OpenAIModelsResponse {

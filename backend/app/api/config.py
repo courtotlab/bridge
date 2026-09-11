@@ -11,6 +11,7 @@ from app.models.config import (
     ConnectionTestResponse,
     ModelsListResponse,
     OllamaModelsRequest,
+    ReasoningCapabilityResponse,
 )
 from app.storage.config_store import (
     MASKED_SECRET_SENTINEL,
@@ -38,6 +39,7 @@ from app.utils.cloud_validation import (
 )
 from app.utils.error_translator import translate
 from app.utils.layer_status import compute_layer_status
+from app.utils.openai_reasoning import resolve_reasoning_capability
 
 router = APIRouter()
 
@@ -58,9 +60,25 @@ def get_config() -> AppConfig:
     return load_config()
 
 
+def _normalize_reasoning_effort(config: AppConfig) -> AppConfig:
+    """Drop a stale/unverifiable reasoning_effort before it reaches disk.
+
+    Only a value Bridge's capability registry currently confirms as valid
+    for the selected model may be persisted — a value left over from a
+    previously selected model, or a model whose reasoning contract Bridge
+    does not (yet) know, is normalized to None rather than saved as-is.
+    """
+    if config.provider != "openai" or config.reasoning_effort is None:
+        return config
+    capability = resolve_reasoning_capability((config.model or "").strip())
+    if capability.status != "supported" or config.reasoning_effort not in capability.options:
+        return config.model_copy(update={"reasoning_effort": None})
+    return config
+
+
 @router.post("", response_model=AppConfig)
 def post_config(config: AppConfig) -> AppConfig:
-    save_config(config)
+    save_config(_normalize_reasoning_effort(config))
     invalidate_connection_test()
     invalidate_retrieval_validation()
     return load_config()
@@ -911,6 +929,37 @@ def _test_openai(config: AppConfig) -> ConnectionTestResponse:
             error_type="model_not_supported",
         )
 
+    # Resolve reasoning capability for the exact selected model before doing
+    # anything else — this must never send a value the registry can't confirm.
+    capability = resolve_reasoning_capability(model)
+    reasoning_response = ReasoningCapabilityResponse(
+        status=capability.status,
+        options=list(capability.options),
+        default=capability.default,
+    )
+    print(
+        f"[config/test] openai reasoning capability  model={model!r} "
+        f"status={capability.status!r} options={list(capability.options)} "
+        f"default={capability.default!r}",
+        flush=True,
+    )
+
+    effective_reasoning: str | None = None
+    if capability.status == "supported":
+        effective_reasoning = (
+            capability.default if config.reasoning_effort is None else config.reasoning_effort
+        )
+        if effective_reasoning not in capability.options:
+            result = model_failure_response(
+                message=(
+                    f"Reasoning effort {effective_reasoning!r} is not supported by {model}. "
+                    f"Supported values: {', '.join(capability.options)}."
+                ),
+                available_models=available,
+                error_type="model_not_supported",
+            )
+            return result.model_copy(update={"reasoning": reasoning_response})
+
     print(f"[config/test] openai phase=model  model={model!r}", flush=True)
     try:
         from llm_ontology_mapper import LLMProviderFactory
@@ -922,24 +971,45 @@ def _test_openai(config: AppConfig) -> ConnectionTestResponse:
             api_key=api_key,
             max_retries=1,
         )
+        complete_kwargs: dict[str, object] = {}
+        if effective_reasoning is not None:
+            # strict=True: never silently drop reasoning_effort after an API
+            # rejection and retry without it — an invalid explicit reasoning
+            # configuration must fail Test Connection, not pass silently.
+            complete_kwargs["reasoning_effort"] = effective_reasoning
+            complete_kwargs["strict"] = True
         response = provider.complete(
             [ChatMessage(role="user", content="Reply with only OK.")],
             temperature=0.1,
             max_tokens=64,
             timeout=30.0,
+            **complete_kwargs,
         )
         text = response.content or ""
         print(f"[config/test] openai chat ← ok  response={text[:80]!r}", flush=True)
     except Exception as exc:  # noqa: BLE001 - normalize OpenAI chat failures
         print(f"[config/test] openai chat ← error  {type(exc).__name__}", flush=True)
-        return openai_chat_error_response(exc.__cause__ or exc, available)
+        cause = exc.__cause__ or exc
+        if effective_reasoning is not None and "reasoning_effort" in str(cause).lower():
+            error_result = model_failure_response(
+                message=(
+                    f"OpenAI rejected reasoning effort {effective_reasoning!r} for {model}. "
+                    "Select a different reasoning value and test again."
+                ),
+                available_models=available,
+                error_type="model_not_supported",
+            )
+        else:
+            error_result = openai_chat_error_response(cause, available)
+        return error_result.model_copy(update={"reasoning": reasoning_response})
 
     latency_ms = int((time.monotonic() - t0) * 1000)
-    return model_validated_success(
+    success_result = model_validated_success(
         message="OpenAI API key valid and selected model is usable.",
         available_models=available,
         latency_ms=latency_ms,
     )
+    return success_result.model_copy(update={"reasoning": reasoning_response})
 
 
 def _test_anthropic(config: AppConfig) -> ConnectionTestResponse:

@@ -8,6 +8,7 @@ import {
   startBatch,
   uploadPreview,
 } from '../api/batchApi';
+import type { AppConfig } from '../types/config';
 import type { BatchJobStatus, BatchRowResult } from '../types/mapping';
 import { BATCH_FILE_ACCEPT } from '../utils/batchFiles';
 import { promoteBatchAlternative } from '../utils/batchPromotion';
@@ -27,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   emitEvent: vi.fn(),
   completeSession: vi.fn(),
   getStatus: vi.fn(),
+  getConfig: vi.fn(),
 }));
 
 vi.mock('../api/batchApi', () => ({
@@ -50,7 +52,23 @@ vi.mock('../context/SessionContext', () => ({
 
 vi.mock('../api/configApi', () => ({
   getStatus: mocks.getStatus,
+  getConfig: mocks.getConfig,
 }));
+
+const baseConfig: AppConfig = {
+  use_ner: true,
+  retrieval_mode: 'public',
+  bioportal_api_key: null,
+  loinc_username: null,
+  loinc_password: null,
+  sapbert_server_url: 'http://localhost:8765',
+  rag_auto_accept_threshold: 0.85,
+  provider: 'ollama',
+  model: 'llama3.2',
+  base_url: 'http://localhost:11434',
+  api_key: null,
+  reasoning_effort: null,
+};
 
 const COMPLETE_COLUMNS = [
   'source_variable',
@@ -350,6 +368,7 @@ beforeEach(() => {
       layer3: 'ok',
     },
   });
+  mocks.getConfig.mockResolvedValue(baseConfig);
 });
 
 afterEach(async () => {
@@ -573,6 +592,36 @@ describe('BatchPage file upload formats', () => {
     await waitFor(() => expect(startBatch).toHaveBeenCalledWith(
       expect.objectContaining({ strictTargetOntology: false }),
     ));
+  });
+});
+
+describe('BatchPage mapping options', () => {
+  it('does not render the legacy "Use RAG grounding" control', async () => {
+    const { user, input } = setup();
+    const file = fileNamed('data.csv', 'text/csv');
+
+    await user.upload(input, file);
+    await waitFor(() => {
+      expect(screen.getAllByText('data.csv').length).toBeGreaterThan(0);
+    });
+
+    expect(screen.queryByText('Use RAG grounding')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Recommended.*slower but more accurate/i)).not.toBeInTheDocument();
+  });
+
+  it('does not include use_rag when starting a batch job', async () => {
+    const { user, input } = setup();
+    const file = fileNamed('data.csv', 'text/csv');
+
+    await user.upload(input, file);
+    await waitFor(() => {
+      expect(screen.getAllByText('data.csv').length).toBeGreaterThan(0);
+    });
+    await user.click(screen.getByRole('button', { name: /start mapping/i }));
+
+    await waitFor(() => expect(mocks.startBatch).toHaveBeenCalled());
+    const callArgs = mocks.startBatch.mock.calls[0][0];
+    expect(callArgs).not.toHaveProperty('useRag');
   });
 });
 
@@ -1567,5 +1616,123 @@ describe('BatchPage alternative promotion', () => {
       el.classList.contains('batch-decision-chip')
     ))).toBe(true);
     expect(mocks.setDecision).toHaveBeenCalledWith('job-1', 0, 'accepted');
+  });
+});
+
+// The static "Estimated time" banner (whole-batch estimate) and the live
+// "Estimated time remaining" line can legitimately render the same text —
+// e.g. before any row completes, remaining rows == total rows, so both use
+// the same fallback math. Scope assertions to the progress card's metadata
+// row (.batch-progress-meta) so they only ever read the live estimate.
+function liveEtaText(container: HTMLElement): string {
+  const meta = container.querySelector('.batch-progress-meta');
+  if (!meta) throw new Error('Progress metadata row not found — batch is not running');
+  return meta.textContent ?? '';
+}
+
+describe('Batch ETA', () => {
+  it('preview ETA is driven by the real Settings retrieval_mode configuration', async () => {
+    // retrieval_mode 'disabled' must produce the faster fallback (~2 sec for
+    // 1 row) rather than the retrieval-enabled fallback (~5 sec).
+    mocks.getConfig.mockResolvedValue({ ...baseConfig, retrieval_mode: 'disabled' });
+    const { user, input } = setup();
+    const file = fileNamed('data.csv', 'text/csv');
+
+    await user.upload(input, file);
+    await waitFor(() => {
+      expect(screen.getAllByText('data.csv').length).toBeGreaterThan(0);
+    });
+
+    expect(await screen.findByText('~2 sec')).toBeInTheDocument();
+    expect(screen.queryByText('~5 sec')).not.toBeInTheDocument();
+  });
+
+  it('uses the deterministic fallback before any row has a valid processing duration', async () => {
+    mocks.startBatch.mockResolvedValue({ job_id: 'job-1', total: 10 });
+    mocks.getBatchStatus.mockResolvedValue(runningBatchStatus([], 10));
+
+    const view = await renderRunningBatch();
+
+    // retrieval_mode defaults to 'public' (baseConfig) -> 5s/term fallback,
+    // 10 rows remaining, zero completed -> 50s.
+    expect(liveEtaText(view.container)).toContain('~50 sec');
+  });
+
+  it('updates the live ETA once a poll supplies a completed row with processing_time_seconds', async () => {
+    mocks.startBatch.mockResolvedValue({ job_id: 'job-1', total: 10 });
+    mocks.getBatchStatus
+      .mockResolvedValueOnce(runningBatchStatus([], 10))
+      .mockResolvedValue(runningBatchStatus(
+        [mappedRow({ row_index: 0, processing_time_seconds: 8 })],
+        10,
+      ));
+
+    const view = await renderRunningBatch();
+    expect(liveEtaText(view.container)).toContain('~50 sec');
+
+    await waitFor(() => expect(mocks.getBatchStatus).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+    });
+
+    // observed mean = 8s, remaining = 9 rows -> 72s -> "~1 min".
+    await waitFor(() => {
+      expect(liveEtaText(view.container)).toContain('~1 min');
+    }, { timeout: 3000 });
+  });
+
+  it('recalculates the live ETA from every valid completed duration as more rows arrive', async () => {
+    mocks.startBatch.mockResolvedValue({ job_id: 'job-1', total: 10 });
+    mocks.getBatchStatus
+      .mockResolvedValueOnce(runningBatchStatus(
+        [mappedRow({ row_index: 0, processing_time_seconds: 4 })],
+        10,
+      ))
+      .mockResolvedValue(runningBatchStatus(
+        [
+          mappedRow({ row_index: 0, processing_time_seconds: 4 }),
+          mappedRow({ row_index: 1, field_name: 'row_2', processing_time_seconds: 6 }),
+        ],
+        10,
+      ));
+
+    const view = await renderRunningBatch();
+    // mean = 4s, remaining = 9 rows -> 36s.
+    expect(liveEtaText(view.container)).toContain('~36 sec');
+
+    await waitFor(() => expect(mocks.getBatchStatus).toHaveBeenCalledTimes(2), {
+      timeout: 3000,
+    });
+
+    // mean = (4 + 6) / 2 = 5s, remaining = 8 rows -> 40s.
+    await waitFor(() => {
+      expect(liveEtaText(view.container)).toContain('~40 sec');
+    }, { timeout: 3000 });
+  });
+
+  it('excludes a failed row (null processing_time_seconds) from the observed average without treating it as zero', async () => {
+    mocks.startBatch.mockResolvedValue({ job_id: 'job-1', total: 4 });
+    mocks.getBatchStatus.mockResolvedValue(runningBatchStatus(
+      [
+        mappedRow({ row_index: 0, processing_time_seconds: 10 }),
+        mappedRow({
+          row_index: 1,
+          field_name: 'unmapped_row',
+          suggested_code: 'UNMAPPED',
+          suggested_term: 'UNMAPPED',
+          decision: 'rejected',
+          confidence: 0,
+          processing_time_seconds: null,
+        }),
+      ],
+      4,
+    ));
+
+    const view = await renderRunningBatch();
+
+    // A correct implementation excludes the null row entirely: mean = 10s,
+    // remaining = 2 rows -> 20s. A buggy implementation that coerced null to
+    // 0 would instead show "~10 sec" (mean 5s * 2 remaining).
+    expect(liveEtaText(view.container)).toContain('~20 sec');
+    expect(liveEtaText(view.container)).not.toContain('~10 sec');
   });
 });

@@ -214,3 +214,174 @@ def test_test_openai_chat_model_not_found(
     assert "invalid" not in result.message.lower()
     client.chat.completions.create.assert_not_called()
     provider.complete.assert_called_once()
+
+
+# ── Reasoning capability ────────────────────────────────────────────────────
+
+
+@patch("llm_ontology_mapper.LLMProviderFactory")
+@patch("openai.OpenAI")
+def test_test_openai_supported_model_no_selected_effort_uses_documented_default(
+    mock_openai_cls: MagicMock,
+    mock_factory: MagicMock,
+):
+    client = MagicMock()
+    mock_openai_cls.return_value = client
+    client.models.list.return_value = MagicMock(data=[MagicMock(id="gpt-5.1")])
+    provider = MagicMock()
+    provider.complete.return_value = MagicMock(content="OK")
+    mock_factory.from_config.return_value = provider
+
+    result = _test_openai(
+        AppConfig(
+            provider="openai", model="gpt-5.1", api_key="sk-valid", reasoning_effort=None
+        ),
+    )
+
+    assert result.success is True
+    assert result.reasoning is not None
+    assert result.reasoning.status == "supported"
+    assert result.reasoning.options == ["none", "low", "medium", "high"]
+    assert result.reasoning.default == "none"
+    provider.complete.assert_called_once()
+    _, kwargs = provider.complete.call_args
+    assert kwargs["reasoning_effort"] == "none"
+    assert kwargs["strict"] is True
+
+
+@patch("llm_ontology_mapper.LLMProviderFactory")
+@patch("openai.OpenAI")
+def test_test_openai_supported_model_explicit_effort_reaches_provider(
+    mock_openai_cls: MagicMock,
+    mock_factory: MagicMock,
+):
+    client = MagicMock()
+    mock_openai_cls.return_value = client
+    client.models.list.return_value = MagicMock(data=[MagicMock(id="gpt-5.1")])
+    provider = MagicMock()
+    provider.complete.return_value = MagicMock(content="OK")
+    mock_factory.from_config.return_value = provider
+
+    result = _test_openai(
+        AppConfig(
+            provider="openai", model="gpt-5.1", api_key="sk-valid", reasoning_effort="high"
+        ),
+    )
+
+    assert result.success is True
+    provider.complete.assert_called_once()
+    _, kwargs = provider.complete.call_args
+    assert kwargs["reasoning_effort"] == "high"
+    assert kwargs["strict"] is True
+
+
+@patch("llm_ontology_mapper.LLMProviderFactory")
+@patch("openai.OpenAI")
+def test_test_openai_explicit_invalid_effort_rejected_before_request(
+    mock_openai_cls: MagicMock,
+    mock_factory: MagicMock,
+):
+    client = MagicMock()
+    mock_openai_cls.return_value = client
+    client.models.list.return_value = MagicMock(data=[MagicMock(id="gpt-5.1")])
+    provider = MagicMock()
+    mock_factory.from_config.return_value = provider
+
+    result = _test_openai(
+        AppConfig(
+            provider="openai", model="gpt-5.1", api_key="sk-valid", reasoning_effort="xhigh"
+        ),
+    )
+
+    assert result.success is False
+    assert result.model_ok is False
+    assert result.error_type == "model_not_supported"
+    assert result.reasoning is not None
+    assert result.reasoning.status == "supported"
+    provider.complete.assert_not_called()
+
+
+@patch("llm_ontology_mapper.LLMProviderFactory")
+@patch("openai.OpenAI")
+def test_test_openai_provider_rejection_of_reasoning_fails_test_connection(
+    mock_openai_cls: MagicMock,
+    mock_factory: MagicMock,
+):
+    """A rejected explicit reasoning value must fail Test Connection — not
+    retry without it and report success for a configuration that was never
+    actually validated."""
+    client = MagicMock()
+    mock_openai_cls.return_value = client
+    client.models.list.return_value = MagicMock(data=[MagicMock(id="gpt-5.1")])
+    provider = MagicMock()
+    mock_factory.from_config.return_value = provider
+    provider.complete.side_effect = RuntimeError(
+        "Error code: 400 - Unsupported parameter: 'reasoning_effort' is not "
+        "supported with this model."
+    )
+
+    result = _test_openai(
+        AppConfig(
+            provider="openai", model="gpt-5.1", api_key="sk-valid", reasoning_effort="high"
+        ),
+    )
+
+    assert result.success is False
+    assert result.model_ok is False
+    assert "high" in result.message
+    provider.complete.assert_called_once()
+    _, kwargs = provider.complete.call_args
+    assert kwargs["reasoning_effort"] == "high"
+    assert kwargs["strict"] is True
+
+
+@patch("llm_ontology_mapper.LLMProviderFactory")
+@patch("openai.OpenAI")
+def test_test_openai_unsupported_model_sends_no_reasoning(
+    mock_openai_cls: MagicMock,
+    mock_factory: MagicMock,
+):
+    client = MagicMock()
+    mock_openai_cls.return_value = client
+    client.models.list.return_value = MagicMock(data=[MagicMock(id="gpt-4o")])
+    provider = MagicMock()
+    provider.complete.return_value = MagicMock(content="OK")
+    mock_factory.from_config.return_value = provider
+
+    result = _test_openai(
+        AppConfig(provider="openai", model="gpt-4o", api_key="sk-valid"),
+    )
+
+    assert result.reasoning is not None
+    assert result.reasoning.status == "unsupported"
+    provider.complete.assert_called_once()
+    _, kwargs = provider.complete.call_args
+    assert "reasoning_effort" not in kwargs
+    assert "strict" not in kwargs
+
+
+@patch("llm_ontology_mapper.LLMProviderFactory")
+@patch("openai.OpenAI")
+def test_test_openai_unknown_model_sends_no_invented_reasoning(
+    mock_openai_cls: MagicMock,
+    mock_factory: MagicMock,
+):
+    client = MagicMock()
+    mock_openai_cls.return_value = client
+    client.models.list.return_value = MagicMock(data=[MagicMock(id="gpt-9-nebula")])
+    provider = MagicMock()
+    provider.complete.return_value = MagicMock(content="OK")
+    mock_factory.from_config.return_value = provider
+
+    result = _test_openai(
+        AppConfig(provider="openai", model="gpt-9-nebula", api_key="sk-valid"),
+    )
+
+    assert result.success is True
+    assert result.reasoning is not None
+    assert result.reasoning.status == "unknown"
+    assert result.reasoning.options == []
+    assert result.reasoning.default is None
+    provider.complete.assert_called_once()
+    _, kwargs = provider.complete.call_args
+    assert "reasoning_effort" not in kwargs

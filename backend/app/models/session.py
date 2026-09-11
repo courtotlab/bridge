@@ -77,7 +77,6 @@ class HistoryConfiguration(BaseModel):
     retrieval_method: str | None = None
     provider: str | None = None
     model: str | None = None
-    rag_enabled: bool | None = None
     strict_target_ontology: bool | None = None
 
 

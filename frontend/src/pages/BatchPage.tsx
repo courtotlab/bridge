@@ -9,16 +9,20 @@ import {
   startBatch,
   uploadPreview,
 } from '../api/batchApi';
+import { getConfig } from '../api/configApi';
 import BatchResultsTable, { filterBatchRows, isUnmappedCode } from '../components/BatchResultsTable';
 import OntologyMultiSelect from '../components/OntologyMultiSelect';
 import StrictOntologyToggle from '../components/StrictOntologyToggle';
 import { ONTOLOGY_OPTIONS } from '../constants/ontologies';
 import { useSession } from '../context/SessionContext';
+import type { RetrievalMode } from '../types/config';
 import type { AlternativeResult, BatchJobStatus, BatchRowResult, BatchUploadPreview } from '../types/mapping';
 import { interruptActiveBatch, registerActiveBatchInterrupter, type BatchInterruptionOptions } from '../utils/activeBatchInterruption';
+import { calculatePreRunEstimateSeconds, calculateRemainingSeconds } from '../utils/batchEta';
 import { promoteBatchAlternative } from '../utils/batchPromotion';
 import { BATCH_FILE_ACCEPT, isSupportedBatchFile, UNSUPPORTED_BATCH_FILE_MESSAGE } from '../utils/batchFiles';
 import { detectColumnMappings } from '../utils/columnDetection';
+import { formatEtaDuration } from '../utils/formatDuration';
 import { effectiveStrictTargetOntology, targetOntologiesOrNull } from '../utils/ontologyPayloads';
 import './BatchPage.css';
 
@@ -50,10 +54,6 @@ hypertension,Hypertension,Diagnosed with hypertension,boolean
 cholesterol,Total Cholesterol,Total cholesterol in mg/dL,numeric`;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-
-function estimateMinutes(rows: number, rag: boolean): number {
-  return Math.max(1, Math.round((rows * (rag ? 5 : 2)) / 60));
-}
 
 function downloadSample() {
   const blob = new Blob([SAMPLE_CSV], { type: 'text/csv' });
@@ -133,8 +133,8 @@ export default function BatchPage() {
   const [columnMap, setColumnMap] = useState<Record<string, string | null>>(initialColumnMap);
   const [targetOntologies, setTargetOntologies] = useState<string[]>([]);
   const [strictTargetOntology, setStrictTargetOntology] = useState(false);
-  const [useRag, setUseRag] = useState(true);
   const [autoAcceptThreshold, setAutoAcceptThreshold] = useState(85);
+  const [retrievalMode, setRetrievalMode] = useState<RetrievalMode | null>(null);
 
   // Job state
   const [phase, setPhase] = useState<Phase>('upload');
@@ -179,6 +179,18 @@ export default function BatchPage() {
     return () => {
       mountedRef.current = false;
     };
+  }, []);
+
+  // Real retrieval configuration for the ETA fallback — driven by
+  // Settings.retrieval_mode, the single source of truth for retrieval behavior.
+  useEffect(() => {
+    getConfig()
+      .then((cfg) => {
+        if (mountedRef.current) setRetrievalMode(cfg.retrieval_mode);
+      })
+      .catch(() => {
+        // Backend unreachable — ETA falls back to the retrieval-enabled default.
+      });
   }, []);
 
   useEffect(() => {
@@ -573,7 +585,6 @@ export default function BatchPage() {
         clinicalArea: null,
         targetOntologyColumn: columnMap.target_ontology,
         targetOntologies,
-        useRag,
         autoAcceptThreshold: autoAcceptThreshold / 100,
         sessionId: sid,
         strictTargetOntology: strictOntology,
@@ -603,7 +614,6 @@ export default function BatchPage() {
             row_count: preview.row_count,
             target_ontology_column: columnMap.target_ontology || null,
             target_ontologies: selectedOntologies,
-            use_rag: useRag,
             auto_accept_threshold: autoAcceptThreshold / 100,
             strict_target_ontology: strictOntology,
           },
@@ -846,7 +856,6 @@ export default function BatchPage() {
     setColumnMap(initialColumnMap());
     setTargetOntologies([]);
     setStrictTargetOntology(false);
-    setUseRag(true);
     setAutoAcceptThreshold(85);
     setPhase('upload');
     setJobId(null);
@@ -1014,21 +1023,6 @@ export default function BatchPage() {
               <h2 className="batch-section-heading">Mapping options</h2>
 
               <div style={{ marginBottom: 16 }}>
-                <label className="batch-rag-row" style={{ cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={useRag}
-                    onChange={(e) => setUseRag(e.target.checked)}
-                    style={{ width: 15, height: 15, accentColor: '#1d4ed8', cursor: 'pointer' }}
-                  />
-                  Use RAG grounding
-                </label>
-                <p className="batch-rag-desc" style={{ marginTop: 4, marginLeft: 23 }}>
-                  Recommended — slower but more accurate.
-                </p>
-              </div>
-
-              <div style={{ marginBottom: 16 }}>
                 <OntologyMultiSelect
                   label="Target ontologies"
                   options={ONTOLOGY_OPTIONS}
@@ -1076,8 +1070,12 @@ export default function BatchPage() {
               <span className="batch-preview-text">
                 Preview: <strong>{preview.row_count} rows</strong> detected in{' '}
                 <strong>{preview.filename}</strong> · Estimated time:{' '}
-                <strong>~{estimateMinutes(preview.row_count, useRag)} minutes</strong>{' '}
-                {useRag ? 'with RAG enabled' : 'without RAG'}
+                <strong>
+                  {formatEtaDuration(
+                    calculatePreRunEstimateSeconds({ rowCount: preview.row_count, retrievalMode }),
+                  )}
+                </strong>{' '}
+                {retrievalMode === 'disabled' ? 'without RAG' : 'with RAG enabled'}
               </span>
               <button
                 className="btn-primary"
@@ -1103,8 +1101,12 @@ export default function BatchPage() {
             <span className="batch-preview-text">
               Preview: <strong>{jobStatus.total} rows</strong> detected in{' '}
               <strong>{file?.name ?? 'file'}</strong> · Estimated time:{' '}
-              <strong>~{estimateMinutes(jobStatus.total, useRag)} minutes</strong>{' '}
-              {useRag ? 'with RAG enabled' : ''}
+              <strong>
+                {formatEtaDuration(
+                  calculatePreRunEstimateSeconds({ rowCount: jobStatus.total, retrievalMode }),
+                )}
+              </strong>{' '}
+              {retrievalMode === 'disabled' ? '' : 'with RAG enabled'}
             </span>
             {phase === 'review' && (
               <button className="btn-primary" onClick={resetAll}>
@@ -1139,7 +1141,9 @@ export default function BatchPage() {
                 <span>
                   Estimated time remaining:{' '}
                   <strong>
-                    ~{Math.max(1, Math.round(((total - completed) * (useRag ? 5 : 2)) / 60))} min
+                    {formatEtaDuration(
+                      calculateRemainingSeconds({ total, completed, results, retrievalMode }),
+                    )}
                   </strong>
                 </span>
               </div>

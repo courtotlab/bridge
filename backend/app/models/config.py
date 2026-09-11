@@ -20,6 +20,7 @@ class AppConfig(BaseModel):
     model: str = "llama3.2"
     base_url: str = "http://localhost:11434"
     api_key: str | None = None  # in-memory only, never saved to disk
+    reasoning_effort: str | None = None  # OpenAI-specific; not secret, persists to disk
 
 
 class LayerStatus(BaseModel):
@@ -38,6 +39,17 @@ class ComponentTestResult(BaseModel):
     status: str
     code: str
     message: str
+
+
+class ReasoningCapabilityResponse(BaseModel):
+    """Normalized OpenAI reasoning-effort capability for the selected model.
+
+    See app.utils.openai_reasoning for the source of truth this is built from.
+    """
+
+    status: Literal["supported", "unsupported", "unknown"]
+    options: list[str] = []
+    default: str | None = None
 
 
 class ConnectionTestResponse(BaseModel):
@@ -59,6 +71,9 @@ class ConnectionTestResponse(BaseModel):
     warning: str | None = None  # inference_timeout
     resident_model: str | None = (
         None  # ollama only: model currently loaded in VRAM (/api/ps)
+    )
+    reasoning: ReasoningCapabilityResponse | None = (
+        None  # openai only, populated once a model is selected and tested
     )
 
 

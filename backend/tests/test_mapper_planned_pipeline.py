@@ -611,8 +611,8 @@ def test_public_retriever_does_not_truncate_candidates_before_reranker(monkeypat
     deps = _patch_planned_dependencies(monkeypatch)
 
     fifteen_candidates = [{"code": f"HP:{i:07d}", "rank": i} for i in range(1, 16)]
-    deps.public_retriever_cls._call_route = lambda self, query, ontology, top_k: (
-        fifteen_candidates
+    deps.public_retriever_cls._call_route = (
+        lambda self, query, ontology, top_k, **kwargs: fifteen_candidates
     )
 
     mapper_instance = MagicMock()
@@ -631,6 +631,71 @@ def test_public_retriever_does_not_truncate_candidates_before_reranker(monkeypat
     # Positions 11-15 (indices 10-14) must survive - no Bridge-level slice to
     # 5 or 10 candidates before the reranker sees them.
     assert candidates[10:15] == fifteen_candidates[10:15]
+
+
+def test_bridge_public_retriever_call_route_timed_accepts_route_diagnostics(
+    monkeypatch,
+):
+    """Regression test for the _call_route/route_diagnostics signature mismatch.
+
+    Unlike the other _call_route tests in this file, this one does NOT
+    monkeypatch llm_ontology_mapper.PublicOntologyRetriever with
+    FakePublicOntologyRetriever. It builds a real BridgePublicOntologyRetriever
+    (subclassing the actual pinned PublicOntologyRetriever) and calls the real,
+    inherited _call_route_timed(), which internally calls
+    self._call_route(..., route_diagnostics=diagnostics). That polymorphic
+    dispatch is exactly what exposed the TypeError this test guards against -
+    the prior FakePublicOntologyRetriever-based tests called _call_route()
+    directly with 3 positional args and never exercised this path.
+    """
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    monkeypatch.setattr(
+        mapper_service, "get_validated_loinc_credentials", lambda _config: None
+    )
+
+    retriever = mapper_service._build_public_retriever(config)
+    assert type(retriever).__name__ == "BridgePublicOntologyRetriever"
+
+    canned_candidates = [{"code": "HP:0012735", "term": "Cough"}]
+    monkeypatch.setattr(
+        retriever._tools, "search_ols", lambda *args, **kwargs: canned_candidates
+    )
+
+    route_calls: list[dict] = []
+    candidates = retriever._call_route_timed(
+        "cough",
+        "HPO",
+        5,
+        route_call_sink=route_calls,
+        route_call={"route": "public_api", "route_name": "OLS"},
+    )
+
+    assert candidates == canned_candidates
+    assert route_calls and route_calls[0]["candidate_count"] == 1
+
+
+def test_bridge_public_retriever_call_route_timed_loinc_gate_without_credentials(
+    monkeypatch,
+):
+    """The LOINC credential gate must still work through the real
+    _call_route_timed -> _call_route inheritance chain, not just when
+    _call_route is invoked directly."""
+    config = AppConfig(provider="ollama", model="llama3.2", retrieval_mode="public")
+    monkeypatch.setattr(
+        mapper_service, "get_validated_loinc_credentials", lambda _config: None
+    )
+
+    retriever = mapper_service._build_public_retriever(config)
+    assert type(retriever).__name__ == "BridgePublicOntologyRetriever"
+
+    with pytest.raises(PublicRetrievalError, match="LOINC credentials must be validated"):
+        retriever._call_route_timed(
+            "glucose",
+            "LOINC",
+            1,
+            route_call_sink=None,
+            route_call={"route": "public_api", "route_name": "LOINC-Search-API"},
+        )
 
 
 def test_changed_credentials_stop_public_loinc_mapping(monkeypatch):

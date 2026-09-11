@@ -318,10 +318,19 @@ def _build_public_retriever(config):
     loinc_username, loinc_password = credentials or ("", "")
 
     class BridgePublicOntologyRetriever(PublicOntologyRetriever):
-        def _call_route(self, query: str, ontology: str, top_k: int):
+        def _call_route(
+            self,
+            query: str,
+            ontology: str,
+            top_k: int,
+            *,
+            route_diagnostics: dict[str, Any] | None = None,
+        ):
             if _is_loinc_ontology(ontology) and credentials is None:
                 raise PublicRetrievalError(_LOINC_CREDENTIALS_REQUIRED_MESSAGE)
-            return super()._call_route(query, ontology, top_k)
+            return super()._call_route(
+                query, ontology, top_k, route_diagnostics=route_diagnostics
+            )
 
     retriever_cls = PublicOntologyRetriever if credentials else BridgePublicOntologyRetriever
     return retriever_cls(
